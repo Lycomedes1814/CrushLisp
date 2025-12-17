@@ -1498,7 +1498,7 @@ static void consume_buffer(char **buffer, size_t *length, size_t consumed) {
     (*buffer)[*length] = '\0';
 }
 
-static void repl(Env *env) {
+static void repl(Env *env, int silent) {
     char *buffer = NULL;
     size_t length = 0;
     size_t capacity = 0;
@@ -1543,9 +1543,11 @@ static void repl(Env *env) {
                     consumed_total = length;
                     break;
                 }
-                char *text = value_to_string(result, 0);
-                printf("%s\n", text);
-                free(text);
+                if (!silent) {
+                    char *text = value_to_string(result, 0);
+                    printf("%s\n", text);
+                    free(text);
+                }
             } else if (status == PARSE_END) {
                 consumed_total += consumed;
                 break;
@@ -1566,9 +1568,27 @@ static void repl(Env *env) {
     free(buffer);
 }
 
-int main(void) {
+int main(int argc, char **argv) {
+    int silent = 0;
+
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "-s") == 0) {
+            silent = 1;
+        } else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
+            printf("Usage: %s [options]\n", argv[0]);
+            printf("Options:\n");
+            printf("  -s        Suppress output (except explicit printing)\n");
+            printf("  -h, --help Show this help message\n");
+            return 0;
+        } else {
+            fprintf(stderr, "Unknown option: %s\n", argv[i]);
+            fprintf(stderr, "Use -h or --help for usage information\n");
+            return 1;
+        }
+    }
+
     Env *global = env_create(NULL);
     install_builtins(global);
-    repl(global);
+    repl(global, silent);
     return 0;
 }
