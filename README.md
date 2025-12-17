@@ -84,6 +84,19 @@ echo "(println \"Result:\" (+ 1 2 3))" | ./crushlisp -s
 **Help:**
 - `(help)` - Show help message
 
+## Runtime Protection
+
+CrushLisp includes built-in protection against common runtime issues:
+
+- **Stack Overflow Protection**: Recursion is limited to a maximum depth of 1000 evaluation steps to prevent segmentation faults from infinite recursion. If exceeded, you'll receive a "Stack overflow: recursion depth exceeded" error instead of a crash.
+
+```lisp
+; This will error gracefully instead of crashing
+(def loop (fn () (loop)))
+(loop)
+; => Error: Stack overflow: recursion depth exceeded
+```
+
 ## Examples
 
 ```lisp

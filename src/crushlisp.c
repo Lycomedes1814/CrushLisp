@@ -97,6 +97,9 @@ static Value VALUE_NIL = { TYPE_NIL, {0}, NULL };
 static Value VALUE_TRUE = { TYPE_BOOL, { .boolean = 1 }, NULL };
 static Value VALUE_FALSE = { TYPE_BOOL, { .boolean = 0 }, NULL };
 
+static const int MAX_EVAL_DEPTH = 1000;
+static int current_eval_depth = 0;
+
 static void *checked_realloc(void *ptr, size_t size) {
     void *result = realloc(ptr, size);
     if (!result) {
@@ -896,6 +899,15 @@ static Value *eval(Value *expr, Env *env, char **error) {
     if (!expr) {
         return value_nil();
     }
+
+    current_eval_depth++;
+    if (current_eval_depth > MAX_EVAL_DEPTH) {
+        current_eval_depth--;
+        set_error(error, "Stack overflow: recursion depth exceeded");
+        return NULL;
+    }
+
+    Value *result = NULL;
     switch (expr->type) {
         case TYPE_NUMBER:
         case TYPE_BOOL:
@@ -903,55 +915,73 @@ static Value *eval(Value *expr, Env *env, char **error) {
         case TYPE_FUNCTION:
         case TYPE_NATIVE_FUNCTION:
         case TYPE_NIL:
-            return expr;
+            result = expr;
+            break;
         case TYPE_SYMBOL: {
             Value *value = env_get(env, expr->data.string);
             if (!value) {
                 set_error(error, "Undefined symbol %s", expr->data.string);
-                return NULL;
+                result = NULL;
+            } else {
+                result = value;
             }
-            return value;
+            break;
         }
         case TYPE_LIST: {
             if (is_nil(expr)) {
-                return expr;
+                result = expr;
+                break;
             }
             Value *op = expr->data.list.car;
             Value *args = expr->data.list.cdr;
             if (op && op->type == TYPE_SYMBOL) {
                 const char *name = op->data.string;
                 if (strcmp(name, "quote") == 0) {
-                    return eval_quote(args, error);
+                    result = eval_quote(args, error);
+                    break;
                 }
                 if (strcmp(name, "if") == 0) {
-                    return eval_if(args, env, error);
+                    result = eval_if(args, env, error);
+                    break;
                 }
                 if (strcmp(name, "def") == 0) {
-                    return eval_def(args, env, error);
+                    result = eval_def(args, env, error);
+                    break;
                 }
                 if (strcmp(name, "let") == 0) {
-                    return eval_let(args, env, error);
+                    result = eval_let(args, env, error);
+                    break;
                 }
                 if (strcmp(name, "fn") == 0) {
-                    return eval_fn(args, env, error);
+                    result = eval_fn(args, env, error);
+                    break;
                 }
                 if (strcmp(name, "do") == 0) {
-                    return eval_do(args, env, error);
+                    result = eval_do(args, env, error);
+                    break;
                 }
             }
             Value *callable = eval(op, env, error);
             if (!callable || (error && *error)) {
-                return NULL;
+                result = NULL;
+                break;
             }
             Value *evaluated_args = eval_args(args, env, error);
             if ((error && *error)) {
-                return NULL;
+                result = NULL;
+                break;
             }
-            return apply_function_value(callable, evaluated_args, error);
+            result = apply_function_value(callable, evaluated_args, error);
+            break;
         }
+        default:
+            set_error(error, "Unsupported expression");
+            result = NULL;
+            break;
     }
-    set_error(error, "Unsupported expression");
-    return NULL;
+
+    current_eval_depth--;
+    return result;
 }
 
 static Value *eval_block(Value *forms, Env *env, char **error) {
@@ -1536,6 +1566,7 @@ static void repl(Env *env, int silent) {
             ParseStatus status = parse_expr(buffer + consumed_total, &consumed, &expr, &error);
             if (status == PARSE_OK) {
                 consumed_total += consumed;
+                current_eval_depth = 0;
                 Value *result = eval(expr, env, &error);
                 if (error) {
                     fprintf(stderr, "Error: %s\n", error);

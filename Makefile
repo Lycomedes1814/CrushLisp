@@ -38,6 +38,7 @@ test: $(TARGET)
 	@echo "(list 1 2 3)" | ./$(TARGET) | grep -q "(1 2 3)" && echo "✓ List test passed"
 	@test "$$(echo '(+ 2 2)' | ./$(TARGET) -s | wc -l)" -eq 0 && echo "✓ Silent mode test passed"
 	@echo "(println \"test\")" | ./$(TARGET) -s | grep -q "test" && echo "✓ Silent mode println test passed"
+	@echo "(def loop (fn () (loop))) (loop)" | ./$(TARGET) 2>&1 | grep -q "Stack overflow" && echo "✓ Stack overflow protection test passed"
 	@echo "All tests passed!"
 
 install: $(TARGET)
