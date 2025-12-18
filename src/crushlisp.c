@@ -1575,7 +1575,7 @@ static void repl(Env *env, int silent) {
                     break;
                 }
                 if (!silent) {
-                    char *text = value_to_string(result, 0);
+                    char *text = value_to_string(result, 1);
                     printf("%s\n", text);
                     free(text);
                 }
