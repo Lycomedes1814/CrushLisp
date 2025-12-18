@@ -1,3 +1,4 @@
+;; -*- clojure -*-
 (def map (fn (f coll)
            (if (= coll nil)
              nil
