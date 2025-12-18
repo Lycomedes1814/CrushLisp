@@ -1,6 +1,6 @@
 # CrushLisp
 
-A minimal Lisp interpreter written in C.
+A subset of Clojure implemented in C.
 
 ## Building
 
