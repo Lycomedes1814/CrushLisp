@@ -1618,6 +1618,59 @@ static Value *builtin_str(Value *args, Env *env, char **error) {
     return make_string_owned(sb_take(&sb));
 }
 
+static Value *builtin_split(Value *args, Env *env, char **error) {
+    (void)env;
+    if (is_nil(args) || is_nil(args->data.list.cdr)) {
+        set_error(error, "split expects a string and a delimiter character");
+        return NULL;
+    }
+    Value *str_val = args->data.list.car;
+    Value *delim_val = args->data.list.cdr->data.list.car;
+    if (str_val->type != TYPE_STRING) {
+        set_error(error, "split expects a string as first argument");
+        return NULL;
+    }
+    if (delim_val->type != TYPE_STRING) {
+        set_error(error, "split expects a string as delimiter");
+        return NULL;
+    }
+    const char *str = str_val->data.string;
+    const char *delim = delim_val->data.string;
+    if (strlen(delim) != 1) {
+        set_error(error, "split expects a single character delimiter");
+        return NULL;
+    }
+    char delim_char = delim[0];
+    Value *result = value_nil();
+    const char *start = str;
+    const char *end = str;
+    while (*end != '\0') {
+        if (*end == delim_char) {
+            size_t len = end - start;
+            char *substr = checked_malloc(len + 1);
+            memcpy(substr, start, len);
+            substr[len] = '\0';
+            result = cons(make_string_owned(substr), result);
+            start = end + 1;
+        }
+        end++;
+    }
+    size_t len = end - start;
+    if (len > 0) {
+        char *substr = checked_malloc(len + 1);
+        memcpy(substr, start, len);
+        substr[len] = '\0';
+        result = cons(make_string_owned(substr), result);
+    }
+    Value *reversed = value_nil();
+    Value *iter = result;
+    while (!is_nil(iter)) {
+        reversed = cons(iter->data.list.car, reversed);
+        iter = iter->data.list.cdr;
+    }
+    return reversed;
+}
+
 static Value *builtin_print(Value *args, Env *env, char **error) {
     (void)env;
     (void)error;
@@ -1972,6 +2025,7 @@ static void install_builtins(Env *env) {
     register_builtin(env, "count", builtin_count, "count");
     register_builtin(env, "nth", builtin_nth, "nth");
     register_builtin(env, "str", builtin_str, "str");
+    register_builtin(env, "split", builtin_split, "split");
     register_builtin(env, "print", builtin_print, "print");
     register_builtin(env, "println", builtin_println, "println");
     register_builtin(env, "eval", builtin_eval, "eval");
