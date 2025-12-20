@@ -4,7 +4,7 @@ This document provides essential information for AI agents working on the CrushL
 
 ## Project Overview
 
-CrushLisp is a subset of Clojure written in C. It's a single-file implementation (~1625 lines) with a REPL, standard Lisp features, and runtime protections.
+CrushLisp is a subset of Clojure written in C. It's a single-file implementation (~1935 lines) with a REPL, standard Lisp features, runtime protections, and file I/O capabilities.
 
 **Language**: C11 with POSIX extensions
 **Files**: Single source file (`src/crushlisp.c`), standard library in Lisp (`src/functions.cl`)
@@ -128,24 +128,25 @@ CrushLisp/
    - `fn` (876-896): Anonymous functions (closure over current env), accepts `[]` or `()` for params
    - `do` (793-795): Sequential evaluation (implicit body)
 
-7. **Built-in Functions** (lines 1070-1496):
+7. **Built-in Functions** (lines 1070-1770):
    - Arithmetic: `+`, `-`, `*`, `/`, `mod`, `inc`, `dec`
    - Comparisons: `=`, `<`, `<=`, `>`, `>=`
    - Lists: `list`, `first`, `rest`, `cons`, `conj`, `count`, `nth`
    - Strings: `str` (concatenate)
-   - I/O: `print`, `println` (flush stdout)
+   - I/O: `print`, `println` (flush stdout), `slurp` (read file), `spit` (write file), `load` (read and eval file)
    - Meta: `help`
 
-8. **REPL** (lines 1531-1600):
+8. **REPL** (lines 1838-1909):
    - `repl`: Read-eval-print loop with continuation support
    - Detects interactive mode via `isatty(STDIN_FILENO)`
    - Multi-line input: accumulates when `PARSE_INCOMPLETE`
    - Prompts: `CrushLisp> ` (normal), `... ` (continuation)
    - Silent mode: skips printing eval results (but `print`/`println` still work)
 
-9. **Main** (lines 1602-1625):
+9. **Main** (lines 1911-1935):
    - Parses `-s` (silent) and `-h/--help` flags
    - Creates global env, installs builtins, starts REPL
+   - Sets `global_environment` static variable for use by `load` function
 
 ### Standard Library (`functions.cl`)
 
@@ -319,10 +320,10 @@ echo "(test expression)" | ./crushlisp
 
 ### Adding a Built-in Function
 
-1. **Implement function** (follow pattern in lines 1070-1465):
+1. **Implement function** (follow pattern in lines 1070-1770):
    ```c
    static Value *builtin_yourfunc(Value *args, Env *env, char **error) {
-       (void)env;  // If unused
+       (void)env;  // Always unused for native functions (called with NULL)
        // Validate args
        if (is_nil(args)) {
            set_error(error, "yourfunc expects arguments");
@@ -334,14 +335,16 @@ echo "(test expression)" | ./crushlisp
    }
    ```
 
-2. **Register in `install_builtins`** (add line ~1472-1496):
+2. **Register in `install_builtins`** (add line ~1777-1804):
    ```c
    register_builtin(env, "yourfunc", builtin_yourfunc, "yourfunc");
    ```
 
-3. **Update `HELP_TEXT`** (lines 73-94) if user-facing
+3. **Update `HELP_TEXT`** (lines 77-104) if user-facing
 
 4. **Add test** in Makefile
+
+**Important**: Native functions are always called with `env=NULL` (see line 1176). If you need access to the global environment (e.g., for eval), use the `global_environment` static variable.
 
 ### Adding a Special Form
 

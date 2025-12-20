@@ -98,6 +98,9 @@ static const char *HELP_TEXT =
 "  (str values...)       concatenate\n"
 "  (print values...)     write without newline\n"
 "  (println values...)   write with newline\n"
+"  (slurp filename)      read file contents\n"
+"  (spit filename content) write string to file\n"
+"  (load filename)       read and evaluate file\n"
 "  (help)                show this message\n";
 
 static Value VALUE_NIL = { TYPE_NIL, {0}, NULL };
@@ -106,6 +109,7 @@ static Value VALUE_FALSE = { TYPE_BOOL, { .boolean = 0 }, NULL };
 
 static const int MAX_EVAL_DEPTH = 1000;
 static int current_eval_depth = 0;
+static Env *global_environment = NULL;
 
 static void *checked_realloc(void *ptr, size_t size) {
     void *result = realloc(ptr, size);
@@ -1646,6 +1650,126 @@ static Value *builtin_help(Value *args, Env *env, char **error) {
     return value_nil();
 }
 
+static Value *builtin_slurp(Value *args, Env *env, char **error) {
+    (void)env;
+    if (is_nil(args)) {
+        set_error(error, "slurp expects a filename");
+        return NULL;
+    }
+    Value *filename_val = args->data.list.car;
+    if (filename_val->type != TYPE_STRING) {
+        set_error(error, "slurp expects a string filename");
+        return NULL;
+    }
+    const char *filename = filename_val->data.string;
+    FILE *file = fopen(filename, "r");
+    if (!file) {
+        set_error(error, "slurp: cannot open file '%s'", filename);
+        return NULL;
+    }
+    StringBuilder sb;
+    sb_init(&sb);
+    char buffer[4096];
+    size_t bytes_read;
+    while ((bytes_read = fread(buffer, 1, sizeof(buffer), file)) > 0) {
+        for (size_t i = 0; i < bytes_read; i++) {
+            sb_append_char(&sb, buffer[i]);
+        }
+    }
+    fclose(file);
+    return make_string_owned(sb_take(&sb));
+}
+
+static Value *builtin_spit(Value *args, Env *env, char **error) {
+    (void)env;
+    if (is_nil(args) || is_nil(args->data.list.cdr)) {
+        set_error(error, "spit expects a filename and content");
+        return NULL;
+    }
+    Value *filename_val = args->data.list.car;
+    Value *content_val = args->data.list.cdr->data.list.car;
+    if (filename_val->type != TYPE_STRING) {
+        set_error(error, "spit expects a string filename");
+        return NULL;
+    }
+    if (content_val->type != TYPE_STRING) {
+        set_error(error, "spit expects string content");
+        return NULL;
+    }
+    const char *filename = filename_val->data.string;
+    const char *content = content_val->data.string;
+    FILE *file = fopen(filename, "w");
+    if (!file) {
+        set_error(error, "spit: cannot open file '%s' for writing", filename);
+        return NULL;
+    }
+    size_t len = strlen(content);
+    size_t written = fwrite(content, 1, len, file);
+    fclose(file);
+    if (written != len) {
+        set_error(error, "spit: failed to write complete content to '%s'", filename);
+        return NULL;
+    }
+    return value_nil();
+}
+
+static Value *builtin_load(Value *args, Env *env, char **error) {
+    (void)env;
+    if (is_nil(args)) {
+        set_error(error, "load expects a filename");
+        return NULL;
+    }
+    Value *filename_val = args->data.list.car;
+    if (filename_val->type != TYPE_STRING) {
+        set_error(error, "load expects a string filename");
+        return NULL;
+    }
+    const char *filename = filename_val->data.string;
+    FILE *file = fopen(filename, "r");
+    if (!file) {
+        set_error(error, "load: cannot open file '%s'", filename);
+        return NULL;
+    }
+    StringBuilder sb;
+    sb_init(&sb);
+    char buffer[4096];
+    size_t bytes_read;
+    while ((bytes_read = fread(buffer, 1, sizeof(buffer), file)) > 0) {
+        for (size_t i = 0; i < bytes_read; i++) {
+            sb_append_char(&sb, buffer[i]);
+        }
+    }
+    fclose(file);
+    char *content = sb_take(&sb);
+    size_t consumed = 0;
+    size_t total_consumed = 0;
+    size_t content_len = strlen(content);
+    Value *last_result = value_nil();
+    while (total_consumed < content_len) {
+        Value *expr = NULL;
+        ParseStatus status = parse_expr(content + total_consumed, &consumed, &expr, error);
+        if (status == PARSE_ERROR) {
+            free(content);
+            return NULL;
+        }
+        if (status == PARSE_END || status == PARSE_INCOMPLETE) {
+            break;
+        }
+        if (!expr) {
+            break;
+        }
+        total_consumed += consumed;
+        Value *result = eval(expr, global_environment, error);
+        if (!result || (error && *error)) {
+            free(content);
+            return NULL;
+        }
+        last_result = result;
+    }
+    free(content);
+    return last_result;
+}
+
 static void register_builtin(Env *env, const char *name, NativeFn fn, const char *doc) {
     Value *value = make_native(fn, doc);
     env_define(env, name, value);
@@ -1674,6 +1798,9 @@ static void install_builtins(Env *env) {
     register_builtin(env, "str", builtin_str, "str");
     register_builtin(env, "print", builtin_print, "print");
     register_builtin(env, "println", builtin_println, "println");
+    register_builtin(env, "slurp", builtin_slurp, "slurp");
+    register_builtin(env, "spit", builtin_spit, "spit");
+    register_builtin(env, "load", builtin_load, "load");
     register_builtin(env, "help", builtin_help, "help");
 }
 
@@ -1801,6 +1928,7 @@ int main(int argc, char **argv) {
     }
 
     Env *global = env_create(NULL);
+    global_environment = global;
     install_builtins(global);
     repl(global, silent);
     return 0;

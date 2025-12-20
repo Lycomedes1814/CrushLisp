@@ -95,6 +95,9 @@ echo "(println \"Result:\" (+ 1 2 3))" | ./crushlisp -s
 - `(str values...)` - Concatenate to string
 - `(print values...)` - Print without newline
 - `(println values...)` - Print with newline
+- `(slurp filename)` - Read entire file as string
+- `(spit filename content)` - Write string to file
+- `(load filename)` - Read and evaluate Lisp file
 
 **Help:**
 - `(help)` - Show help message
@@ -140,6 +143,16 @@ CrushLisp includes built-in protection against common runtime issues:
 ; String operations
 (str "Hello" " " "World")  ; => "Hello World"
 (println "Result:" 42)     ; Prints: Result: 42
+
+; File I/O
+(spit "data.txt" "Hello, World!")
+(def content (slurp "data.txt"))
+(println content)  ; Prints: Hello, World!
+
+; Loading external files
+(spit "lib.lisp" "(def square (fn [x] (* x x)))")
+(load "lib.lisp")
+(square 5)  ; => 25
 ```
 
 ## Installation

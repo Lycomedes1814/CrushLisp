@@ -43,6 +43,8 @@ test: $(TARGET)
 	@test "$$(echo '(+ 2 2)' | ./$(TARGET) -s | wc -l)" -eq 0 && echo "✓ Silent mode test passed"
 	@echo "(println \"test\")" | ./$(TARGET) -s | grep -q "test" && echo "✓ Silent mode println test passed"
 	@echo "(def loop (fn () (loop))) (loop)" | ./$(TARGET) 2>&1 | grep -q "Stack overflow" && echo "✓ Stack overflow protection test passed"
+	@echo '(spit "test_file.txt" "Hello CrushLisp") (slurp "test_file.txt")' | ./$(TARGET) | tail -1 | grep -q "Hello CrushLisp" && rm -f test_file.txt && echo "✓ File I/O (slurp/spit) test passed"
+	@echo '(def x 10) x' > test_load.lisp && echo '(load "test_load.lisp") (+ x 5)' | ./$(TARGET) | tail -1 | grep -q "15" && rm -f test_load.lisp && echo "✓ File loading (load) test passed"
 	@echo "All tests passed!"
 
 install: $(TARGET)
