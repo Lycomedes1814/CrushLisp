@@ -4,7 +4,7 @@ This document provides essential information for AI agents working on the CrushL
 
 ## Project Overview
 
-CrushLisp is a subset of Clojure written in C. It's a single-file implementation (~1935 lines) with a REPL, standard Lisp features, runtime protections, and file I/O capabilities.
+CrushLisp is a subset of Clojure written in C. It's a single-file implementation (~1947 lines) with a REPL, standard Lisp features, runtime protections, and file I/O capabilities.
 
 **Language**: C11 with POSIX extensions
 **Files**: Single source file (`src/crushlisp.c`), standard library in Lisp (`src/functions.cl`)
@@ -128,25 +128,26 @@ CrushLisp/
    - `fn` (876-896): Anonymous functions (closure over current env), accepts `[]` or `()` for params
    - `do` (793-795): Sequential evaluation (implicit body)
 
-7. **Built-in Functions** (lines 1070-1770):
+7. **Built-in Functions** (lines 1070-1800):
    - Arithmetic: `+`, `-`, `*`, `/`, `mod`, `inc`, `dec`
    - Comparisons: `=`, `<`, `<=`, `>`, `>=`
    - Lists: `list`, `first`, `rest`, `cons`, `conj`, `count`, `nth`
    - Strings: `str` (concatenate)
-   - I/O: `print`, `println` (flush stdout), `slurp` (read file), `spit` (write file), `load` (read and eval file)
+   - I/O: `print`, `println` (flush stdout), `slurp` (read file), `spit` (write file)
+   - Evaluation: `eval` (evaluate expression or string), `load` (read and eval file, implemented as `eval` + `slurp`)
    - Meta: `help`
 
-8. **REPL** (lines 1838-1909):
+8. **REPL** (lines 1850-1920):
    - `repl`: Read-eval-print loop with continuation support
    - Detects interactive mode via `isatty(STDIN_FILENO)`
    - Multi-line input: accumulates when `PARSE_INCOMPLETE`
    - Prompts: `CrushLisp> ` (normal), `... ` (continuation)
    - Silent mode: skips printing eval results (but `print`/`println` still work)
 
-9. **Main** (lines 1911-1935):
+9. **Main** (lines 1922-1947):
    - Parses `-s` (silent) and `-h/--help` flags
    - Creates global env, installs builtins, starts REPL
-   - Sets `global_environment` static variable for use by `load` function
+   - Sets `global_environment` static variable for use by `eval` and `load` functions
 
 ### Standard Library (`functions.cl`)
 

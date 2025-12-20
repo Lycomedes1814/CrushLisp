@@ -98,9 +98,10 @@ static const char *HELP_TEXT =
 "  (str values...)       concatenate\n"
 "  (print values...)     write without newline\n"
 "  (println values...)   write with newline\n"
+"  (eval expr)           evaluate expression or string\n"
 "  (slurp filename)      read file contents\n"
 "  (spit filename content) write string to file\n"
-"  (load filename)       read and evaluate file\n"
+"  (load filename)       read and evaluate file (= eval + slurp)\n"
 "  (help)                show this message\n";
 
 static Value VALUE_NIL = { TYPE_NIL, {0}, NULL };
@@ -1650,6 +1651,49 @@ static Value *builtin_help(Value *args, Env *env, char **error) {
     return value_nil();
 }
 
+static Value *builtin_eval(Value *args, Env *env, char **error) {
+    (void)env;
+    if (is_nil(args)) {
+        set_error(error, "eval expects an expression");
+        return NULL;
+    }
+    Value *expr_val = args->data.list.car;
+    if (expr_val->type == TYPE_STRING) {
+        const char *str = expr_val->data.string;
+        size_t str_len = strlen(str);
+        size_t total_consumed = 0;
+        Value *last_result = value_nil();
+
+        while (total_consumed < str_len) {
+            Value *parsed = NULL;
+            size_t consumed = 0;
+            ParseStatus status = parse_expr(str + total_consumed, &consumed, &parsed, error);
+
+            if (status == PARSE_ERROR) {
+                if (!*error) {
+                    set_error(error, "eval: failed to parse string");
+                }
+                return NULL;
+            }
+            if (status == PARSE_END || status == PARSE_INCOMPLETE) {
+                break;
+            }
+            if (!parsed) {
+                break;
+            }
+
+            total_consumed += consumed;
+            Value *result = eval(parsed, global_environment, error);
+            if (!result || (error && *error)) {
+                return NULL;
+            }
+            last_result = result;
+        }
+        return last_result;
+    }
+    return eval(expr_val, global_environment, error);
+}
+
 static Value *builtin_slurp(Value *args, Env *env, char **error) {
     (void)env;
     if (is_nil(args)) {
@@ -1724,50 +1768,17 @@ static Value *builtin_load(Value *args, Env *env, char **error) {
         set_error(error, "load expects a string filename");
         return NULL;
     }
-    const char *filename = filename_val->data.string;
-    FILE *file = fopen(filename, "r");
-    if (!file) {
-        set_error(error, "load: cannot open file '%s'", filename);
+
+    // Call slurp to read the file
+    Value *slurp_args = cons(filename_val, value_nil());
+    Value *content = builtin_slurp(slurp_args, NULL, error);
+    if (!content || (error && *error)) {
         return NULL;
     }
-    StringBuilder sb;
-    sb_init(&sb);
-    char buffer[4096];
-    size_t bytes_read;
-    while ((bytes_read = fread(buffer, 1, sizeof(buffer), file)) > 0) {
-        for (size_t i = 0; i < bytes_read; i++) {
-            sb_append_char(&sb, buffer[i]);
-        }
-    }
-    fclose(file);
-    char *content = sb_take(&sb);
-    size_t consumed = 0;
-    size_t total_consumed = 0;
-    size_t content_len = strlen(content);
-    Value *last_result = value_nil();
-    while (total_consumed < content_len) {
-        Value *expr = NULL;
-        ParseStatus status = parse_expr(content + total_consumed, &consumed, &expr, error);
-        if (status == PARSE_ERROR) {
-            free(content);
-            return NULL;
-        }
-        if (status == PARSE_END || status == PARSE_INCOMPLETE) {
-            break;
-        }
-        if (!expr) {
-            break;
-        }
-        total_consumed += consumed;
-        Value *result = eval(expr, global_environment, error);
-        if (!result || (error && *error)) {
-            free(content);
-            return NULL;
-        }
-        last_result = result;
-    }
-    free(content);
-    return last_result;
+
+    // Call eval to evaluate the content
+    Value *eval_args = cons(content, value_nil());
+    return builtin_eval(eval_args, NULL, error);
 }
 
 static void register_builtin(Env *env, const char *name, NativeFn fn, const char *doc) {
@@ -1798,6 +1809,7 @@ static void install_builtins(Env *env) {
     register_builtin(env, "str", builtin_str, "str");
     register_builtin(env, "print", builtin_print, "print");
     register_builtin(env, "println", builtin_println, "println");
+    register_builtin(env, "eval", builtin_eval, "eval");
     register_builtin(env, "slurp", builtin_slurp, "slurp");
     register_builtin(env, "spit", builtin_spit, "spit");
     register_builtin(env, "load", builtin_load, "load");

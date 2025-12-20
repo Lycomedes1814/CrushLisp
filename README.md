@@ -95,9 +95,10 @@ echo "(println \"Result:\" (+ 1 2 3))" | ./crushlisp -s
 - `(str values...)` - Concatenate to string
 - `(print values...)` - Print without newline
 - `(println values...)` - Print with newline
+- `(eval expr)` - Evaluate expression or string containing code
 - `(slurp filename)` - Read entire file as string
 - `(spit filename content)` - Write string to file
-- `(load filename)` - Read and evaluate Lisp file
+- `(load filename)` - Read and evaluate Lisp file (equivalent to `(eval (slurp filename))`)
 
 **Help:**
 - `(help)` - Show help message
@@ -144,6 +145,11 @@ CrushLisp includes built-in protection against common runtime issues:
 (str "Hello" " " "World")  ; => "Hello World"
 (println "Result:" 42)     ; Prints: Result: 42
 
+; Eval
+(eval "(+ 1 2 3)")         ; => 6
+(def code "(* 5 5)")
+(eval code)                ; => 25
+
 ; File I/O
 (spit "data.txt" "Hello, World!")
 (def content (slurp "data.txt"))
@@ -151,7 +157,7 @@ CrushLisp includes built-in protection against common runtime issues:
 
 ; Loading external files
 (spit "lib.lisp" "(def square (fn [x] (* x x)))")
-(load "lib.lisp")
+(load "lib.lisp")          ; Same as (eval (slurp "lib.lisp"))
 (square 5)  ; => 25
 ```
 
