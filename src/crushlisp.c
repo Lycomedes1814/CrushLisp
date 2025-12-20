@@ -81,7 +81,7 @@ static const char *HELP_TEXT =
 "  (if test then else) conditional branching\n"
 "  (def name value)   bind a global name\n"
 "  (let (name value ...) body...) scoped locals\n"
-"  (fn (params...) body...) anonymous function\n"
+"  (fn [params...] body...) anonymous function ([] or () for params)\n"
 "  (do expr...)       evaluate expressions sequentially\n\n"
 "Data structures:\n"
 "  (list values...)   list literal (for code/function calls)\n"
@@ -923,16 +923,53 @@ static Value *eval_let(Value *args, Env *env, char **error) {
 static int params_are_symbols(Value *params) {
     Value *iter = params;
     while (!is_nil(iter)) {
-        if (!is_list(iter)) {
+        if (is_list(iter)) {
+            Value *item = iter->data.list.car;
+            if (!item || item->type != TYPE_SYMBOL) {
+                return 0;
+            }
+            iter = iter->data.list.cdr;
+        } else if (is_vector(iter)) {
+            Value *item = iter->data.vector.car;
+            if (!item || item->type != TYPE_SYMBOL) {
+                return 0;
+            }
+            iter = iter->data.vector.cdr;
+        } else {
             return 0;
         }
-        Value *item = iter->data.list.car;
-        if (!item || item->type != TYPE_SYMBOL) {
-            return 0;
-        }
-        iter = iter->data.list.cdr;
     }
     return 1;
+}
+
+static Value *vector_to_list(Value *vec) {
+    if (is_nil(vec)) {
+        return value_nil();
+    }
+    if (is_list(vec)) {
+        return vec;
+    }
+    if (!is_vector(vec)) {
+        return vec;
+    }
+    Value **items = NULL;
+    size_t count = 0;
+    size_t capacity = 0;
+    Value *iter = vec;
+    while (!is_nil(iter)) {
+        if (!is_vector(iter)) {
+            break;
+        }
+        if (count == capacity) {
+            capacity = capacity ? capacity * 2 : 4;
+            items = checked_realloc(items, capacity * sizeof(Value *));
+        }
+        items[count++] = iter->data.vector.car;
+        iter = iter->data.vector.cdr;
+    }
+    Value *result = list_from_array(items, count);
+    free(items);
+    return result;
 }
 
 static Value *eval_fn(Value *args, Env *env, char **error) {
@@ -941,8 +978,8 @@ static Value *eval_fn(Value *args, Env *env, char **error) {
         return NULL;
     }
     Value *params = args->data.list.car;
-    if (!(is_nil(params) || is_list(params))) {
-        set_error(error, "fn parameters must be a list");
+    if (!(is_nil(params) || is_list(params) || is_vector(params))) {
+        set_error(error, "fn parameters must be a list or vector");
         return NULL;
     }
     if (!params_are_symbols(params)) {
@@ -954,7 +991,9 @@ static Value *eval_fn(Value *args, Env *env, char **error) {
         set_error(error, "fn requires a body");
         return NULL;
     }
-    return make_function(params, body, env);
+    // Convert vector params to list for internal consistency
+    Value *params_list = vector_to_list(params);
+    return make_function(params_list, body, env);
 }
 
 static Value *eval(Value *expr, Env *env, char **error) {

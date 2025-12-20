@@ -54,6 +54,7 @@ make test         # Run all built-in tests
 - Vectors: `[3 4 5]` → `[3 4 5]`
 - Vector evaluation: `[(+ 1 2) (* 3 4)]` → `[3 12]`
 - Vector collection ops: `(def v [1 2 3]) (first v)` → `1`
+- Function with vector params: `((fn [x y] (+ x y)) 3 5)` → `8`
 - Silent mode: `-s` flag behavior
 - Stack overflow protection
 
@@ -124,7 +125,7 @@ CrushLisp/
    - `if` (766-791): Conditional with optional else
    - `def` (797-820): Global binding (uses `env_global`)
    - `let` (822-859): Local bindings (creates child env)
-   - `fn` (876-896): Anonymous functions (closure over current env)
+   - `fn` (876-896): Anonymous functions (closure over current env), accepts `[]` or `()` for params
    - `do` (793-795): Sequential evaluation (implicit body)
 
 7. **Built-in Functions** (lines 1070-1496):

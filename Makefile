@@ -39,6 +39,7 @@ test: $(TARGET)
 	@echo "[3 4 5]" | ./$(TARGET) | grep -q "\[3 4 5\]" && echo "✓ Vector literal test passed"
 	@echo "[(+ 1 2) (* 3 4)]" | ./$(TARGET) | grep -q "\[3 12\]" && echo "✓ Vector evaluation test passed"
 	@echo "(def v [1 2 3]) (first v)" | ./$(TARGET) | tail -1 | grep -q "1" && echo "✓ Vector collection ops test passed"
+	@echo "((fn [x y] (+ x y)) 3 5)" | ./$(TARGET) | grep -q "8" && echo "✓ Function with vector params test passed"
 	@test "$$(echo '(+ 2 2)' | ./$(TARGET) -s | wc -l)" -eq 0 && echo "✓ Silent mode test passed"
 	@echo "(println \"test\")" | ./$(TARGET) -s | grep -q "test" && echo "✓ Silent mode println test passed"
 	@echo "(def loop (fn () (loop))) (loop)" | ./$(TARGET) 2>&1 | grep -q "Stack overflow" && echo "✓ Stack overflow protection test passed"
