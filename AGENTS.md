@@ -51,6 +51,9 @@ make test         # Run all built-in tests
 - Variables: `(def x 10) (* x x)` → `100`
 - Conditionals: `(if (< 5 10) "yes" "no")` → `yes`
 - Lists: `(list 1 2 3)` → `(1 2 3)`
+- Vectors: `[3 4 5]` → `[3 4 5]`
+- Vector evaluation: `[(+ 1 2) (* 3 4)]` → `[3 12]`
+- Vector collection ops: `(def v [1 2 3]) (first v)` → `1`
 - Silent mode: `-s` flag behavior
 - Stack overflow protection
 
@@ -81,7 +84,7 @@ CrushLisp/
 ### Core Components (all in `crushlisp.c`)
 
 1. **Data Structures** (lines 12-70):
-   - `ValueType` enum: NIL, NUMBER, BOOL, STRING, SYMBOL, LIST, FUNCTION, NATIVE_FUNCTION
+   - `ValueType` enum: NIL, NUMBER, BOOL, STRING, SYMBOL, LIST, VECTOR, FUNCTION, NATIVE_FUNCTION
    - `Value` struct: Tagged union with type and data
    - `Env` struct: Environment with bindings chain (lexical scoping)
    - `Binding` struct: Linked list of name-value pairs
@@ -96,10 +99,12 @@ CrushLisp/
    - Singleton values: `VALUE_NIL`, `VALUE_TRUE`, `VALUE_FALSE`
    - `make_number`, `make_string_owned`, `make_symbol`, `make_native`, `make_function`
    - `cons`: List construction (car/cdr pairs)
+   - `vcons`: Vector construction (car/cdr pairs)
 
 4. **Parser** (lines 518-747):
    - `parse_expr`: Entry point, returns `ParseStatus` (OK, INCOMPLETE, ERROR, END)
-   - Supports: numbers, strings, symbols, lists `()`, vectors `[]` (treated as lists)
+   - Supports: numbers, strings, symbols, lists `()`, vectors `[]`
+   - Lists `()` create TYPE_LIST, vectors `[]` create TYPE_VECTOR
    - String escapes: `\n \r \t \\ \"`
    - Comments: `;` to end of line
    - Quote sugar: `'x` → `(quote x)`
@@ -109,6 +114,8 @@ CrushLisp/
    - `eval`: Main evaluation dispatch (898-985)
    - **Stack overflow protection**: `current_eval_depth` counter, max 1000 (lines 100-101, 903-908)
    - Special forms: `quote`, `if`, `def`, `let`, `fn`, `do`
+   - Lists evaluate as function calls
+   - Vectors evaluate their contents but return as vectors (not function calls)
    - Lexical scoping with closure support
    - Tail-call-unsafe (no TCO)
 
@@ -400,7 +407,9 @@ When extending the interpreter, maintain this pattern (don't add free logic with
 3. **No continuations** (`call/cc` not supported)
 4. **Numbers are doubles** (no integer type, no bignums)
 5. **No keywords** (symbols only)
-6. **Vectors are lists** (`[]` syntax allowed but creates lists)
+6. **Vectors vs Lists**: `[]` creates TYPE_VECTOR (data), `()` creates TYPE_LIST (code)
+   - Vectors evaluate their contents but never as function calls
+   - Lists evaluate as function calls when in expression position
 7. **No destructuring** (in `let` or `fn` params)
 8. **Limited standard library** (only `map` in functions.cl)
 

@@ -49,6 +49,20 @@ echo "(println \"Result:\" (+ 1 2 3))" | ./crushlisp -s
 
 ## Language Features
 
+### Data Structures
+
+**Lists** - For code and function calls:
+```lisp
+(list 1 2 3)        ; => (1 2 3)
+(+ 1 2 3)           ; Lists evaluate as function calls
+```
+
+**Vectors** - For data (evaluate their contents but don't call as functions):
+```lisp
+[1 2 3]             ; => [1 2 3]
+[(+ 1 2) (* 3 4)]   ; => [3 12]  (expressions inside are evaluated)
+```
+
 ### Special Forms
 
 - `(quote x)` - Return x without evaluation
@@ -67,8 +81,9 @@ echo "(println \"Result:\" (+ 1 2 3))" | ./crushlisp -s
 **Comparisons:**
 - `=`, `<`, `<=`, `>`, `>=`
 
-**Lists:**
+**Lists & Vectors:**
 - `(list values...)` - Create a list
+- `[values...]` - Create a vector
 - `(first coll)` - First element
 - `(rest coll)` - Remaining elements
 - `(cons x coll)` - Prepend value
@@ -115,6 +130,12 @@ CrushLisp includes built-in protection against common runtime issues:
 (rest nums)       ; => (2 3 4 5)
 (count nums)      ; => 5
 (nth nums 2)      ; => 3
+
+; Vector operations
+(def data [10 20 30])
+(first data)      ; => 10
+(count data)      ; => 3
+[(+ 1 2) 4 5]     ; => [3 4 5] (elements are evaluated)
 
 ; String operations
 (str "Hello" " " "World")  ; => "Hello World"

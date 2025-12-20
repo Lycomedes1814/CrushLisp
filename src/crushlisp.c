@@ -16,6 +16,7 @@ typedef enum {
     TYPE_STRING,
     TYPE_SYMBOL,
     TYPE_LIST,
+    TYPE_VECTOR,
     TYPE_FUNCTION,
     TYPE_NATIVE_FUNCTION
 } ValueType;
@@ -49,6 +50,10 @@ struct Value {
             Value *cdr;
         } list;
         struct {
+            Value *car;
+            Value *cdr;
+        } vector;
+        struct {
             Value *params;
             Value *body;
             Env *env;
@@ -78,10 +83,12 @@ static const char *HELP_TEXT =
 "  (let (name value ...) body...) scoped locals\n"
 "  (fn (params...) body...) anonymous function\n"
 "  (do expr...)       evaluate expressions sequentially\n\n"
+"Data structures:\n"
+"  (list values...)   list literal (for code/function calls)\n"
+"  [values...]        vector literal (for data)\n\n"
 "Functions:\n"
 "  (+ - * / mod inc dec) arithmetic\n"
 "  (= < <= > >=)         comparisons\n"
-"  (list values...)      list literal\n"
 "  (first coll)          first element\n"
 "  (rest coll)           remaining elements\n"
 "  (cons x coll)         prepend value\n"
@@ -249,10 +256,21 @@ static int is_list(Value *value) {
     return value && value->type == TYPE_LIST;
 }
 
+static int is_vector(Value *value) {
+    return value && value->type == TYPE_VECTOR;
+}
+
 static Value *cons(Value *car, Value *cdr) {
     Value *value = allocate_value(TYPE_LIST);
     value->data.list.car = car;
     value->data.list.cdr = cdr ? cdr : value_nil();
+    return value;
+}
+
+static Value *vcons(Value *car, Value *cdr) {
+    Value *value = allocate_value(TYPE_VECTOR);
+    value->data.vector.car = car;
+    value->data.vector.cdr = cdr ? cdr : value_nil();
     return value;
 }
 
@@ -274,6 +292,15 @@ static Value *list_from_array(Value **items, size_t count) {
     for (size_t i = 0; i < count; ++i) {
         size_t idx = count - 1 - i;
         result = cons(items[idx], result);
+    }
+    return result;
+}
+
+static Value *vector_from_array(Value **items, size_t count) {
+    Value *result = value_nil();
+    for (size_t i = 0; i < count; ++i) {
+        size_t idx = count - 1 - i;
+        result = vcons(items[idx], result);
     }
     return result;
 }
@@ -367,6 +394,21 @@ static int value_equals(Value *a, Value *b) {
             }
             return is_nil(curr_a) && is_nil(curr_b);
         }
+        case TYPE_VECTOR: {
+            Value *curr_a = a;
+            Value *curr_b = b;
+            while (!is_nil(curr_a) && !is_nil(curr_b)) {
+                if (!is_vector(curr_a) || !is_vector(curr_b)) {
+                    break;
+                }
+                if (!value_equals(curr_a->data.vector.car, curr_b->data.vector.car)) {
+                    return 0;
+                }
+                curr_a = curr_a->data.vector.cdr;
+                curr_b = curr_b->data.vector.cdr;
+            }
+            return is_nil(curr_a) && is_nil(curr_b);
+        }
         case TYPE_FUNCTION:
         case TYPE_NATIVE_FUNCTION:
             return a == b;
@@ -452,6 +494,26 @@ static void write_value(StringBuilder *sb, Value *value, int readable) {
                 first = 0;
             }
             sb_append_char(sb, ')');
+            break;
+        }
+        case TYPE_VECTOR: {
+            sb_append_char(sb, '[');
+            Value *current = value;
+            int first = 1;
+            while (!is_nil(current)) {
+                if (!is_vector(current)) {
+                    sb_append(sb, " . ");
+                    write_value(sb, current, readable);
+                    break;
+                }
+                if (!first) {
+                    sb_append_char(sb, ' ');
+                }
+                write_value(sb, current->data.vector.car, readable);
+                current = current->data.vector.cdr;
+                first = 0;
+            }
+            sb_append_char(sb, ']');
             break;
         }
         case TYPE_FUNCTION:
@@ -641,7 +703,7 @@ static Value *parse_symbol_token(const char *input, size_t *index) {
     return symbol;
 }
 
-static ParseStatus parse_list_data(const char *input, size_t *index, char closing, Value **out, char **error) {
+static ParseStatus parse_list_data(const char *input, size_t *index, char closing, int is_vector, Value **out, char **error) {
     size_t i = *index + 1;
     Value **items = NULL;
     size_t count = 0;
@@ -672,9 +734,9 @@ static ParseStatus parse_list_data(const char *input, size_t *index, char closin
         i = item_index;
     }
     *index = i;
-    Value *list = list_from_array(items, count);
+    Value *result = is_vector ? vector_from_array(items, count) : list_from_array(items, count);
     free(items);
-    *out = list;
+    *out = result;
     return PARSE_OK;
 }
 
@@ -686,10 +748,10 @@ static ParseStatus parse_expr_internal(const char *input, size_t *index, Value *
         return PARSE_END;
     }
     if (c == '(') {
-        return parse_list_data(input, index, ')', out, error);
+        return parse_list_data(input, index, ')', 0, out, error);
     }
     if (c == '[') {
-        return parse_list_data(input, index, ']', out, error);
+        return parse_list_data(input, index, ']', 1, out, error);
     }
     if (c == ')') {
         set_error(error, "Unexpected )");
@@ -917,6 +979,42 @@ static Value *eval(Value *expr, Env *env, char **error) {
         case TYPE_NIL:
             result = expr;
             break;
+        case TYPE_VECTOR: {
+            if (is_nil(expr)) {
+                result = expr;
+                break;
+            }
+            Value *iter = expr;
+            Value **items = NULL;
+            size_t count = 0;
+            size_t capacity = 0;
+            while (!is_nil(iter)) {
+                if (!is_vector(iter)) {
+                    set_error(error, "Malformed vector");
+                    free(items);
+                    result = NULL;
+                    break;
+                }
+                Value *element = iter->data.vector.car;
+                Value *evaluated = eval(element, env, error);
+                if (!evaluated || (error && *error)) {
+                    free(items);
+                    result = NULL;
+                    break;
+                }
+                if (count == capacity) {
+                    capacity = capacity ? capacity * 2 : 4;
+                    items = checked_realloc(items, capacity * sizeof(Value *));
+                }
+                items[count++] = evaluated;
+                iter = iter->data.vector.cdr;
+            }
+            if (result == NULL && (!error || !*error)) {
+                result = vector_from_array(items, count);
+                free(items);
+            }
+            break;
+        }
         case TYPE_SYMBOL: {
             Value *value = env_get(env, expr->data.string);
             if (!value) {
@@ -1295,20 +1393,68 @@ static Value *ensure_list(Value *value, char **error, const char *name) {
     return NULL;
 }
 
+static Value *ensure_collection(Value *value, char **error, const char *name) {
+    if (is_nil(value) || is_list(value) || is_vector(value)) {
+        return value;
+    }
+    set_error(error, "%s expects a collection (list or vector)", name);
+    return NULL;
+}
+
+static Value *coll_first(Value *coll) {
+    if (is_nil(coll)) {
+        return value_nil();
+    }
+    if (is_list(coll)) {
+        return coll->data.list.car;
+    }
+    if (is_vector(coll)) {
+        return coll->data.vector.car;
+    }
+    return value_nil();
+}
+
+static Value *coll_rest(Value *coll) {
+    if (is_nil(coll)) {
+        return value_nil();
+    }
+    if (is_list(coll)) {
+        return coll->data.list.cdr;
+    }
+    if (is_vector(coll)) {
+        return coll->data.vector.cdr;
+    }
+    return value_nil();
+}
+
+static size_t coll_length(Value *coll) {
+    size_t count = 0;
+    Value *current = coll;
+    while (!is_nil(current)) {
+        if (is_list(current)) {
+            count += 1;
+            current = current->data.list.cdr;
+        } else if (is_vector(current)) {
+            count += 1;
+            current = current->data.vector.cdr;
+        } else {
+            break;
+        }
+    }
+    return count;
+}
+
 static Value *builtin_first(Value *args, Env *env, char **error) {
     (void)env;
     if (is_nil(args)) {
         set_error(error, "first expects a collection");
         return NULL;
     }
-    Value *coll = ensure_list(args->data.list.car, error, "first");
+    Value *coll = ensure_collection(args->data.list.car, error, "first");
     if (!coll && !(error && *error)) {
         return NULL;
     }
-    if (is_nil(coll)) {
-        return value_nil();
-    }
-    return coll->data.list.car;
+    return coll_first(coll);
 }
 
 static Value *builtin_rest(Value *args, Env *env, char **error) {
@@ -1317,14 +1463,11 @@ static Value *builtin_rest(Value *args, Env *env, char **error) {
         set_error(error, "rest expects a collection");
         return NULL;
     }
-    Value *coll = ensure_list(args->data.list.car, error, "rest");
+    Value *coll = ensure_collection(args->data.list.car, error, "rest");
     if (!coll && !(error && *error)) {
         return NULL;
     }
-    if (is_nil(coll)) {
-        return value_nil();
-    }
-    return coll->data.list.cdr;
+    return coll_rest(coll);
 }
 
 static Value *builtin_cons(Value *args, Env *env, char **error) {
@@ -1378,11 +1521,11 @@ static Value *builtin_count(Value *args, Env *env, char **error) {
     if (value->type == TYPE_STRING) {
         return make_number((double)strlen(value->data.string));
     }
-    Value *list_value = ensure_list(value, error, "count");
-    if (!list_value && !(error && *error)) {
+    Value *coll_value = ensure_collection(value, error, "count");
+    if (!coll_value && !(error && *error)) {
         return NULL;
     }
-    return make_number((double)list_length(list_value));
+    return make_number((double)coll_length(coll_value));
 }
 
 static Value *builtin_nth(Value *args, Env *env, char **error) {
@@ -1391,7 +1534,7 @@ static Value *builtin_nth(Value *args, Env *env, char **error) {
         set_error(error, "nth expects collection and index");
         return NULL;
     }
-    Value *coll = ensure_list(args->data.list.car, error, "nth");
+    Value *coll = ensure_collection(args->data.list.car, error, "nth");
     if (!coll && !(error && *error)) {
         return NULL;
     }
@@ -1404,9 +1547,9 @@ static Value *builtin_nth(Value *args, Env *env, char **error) {
     size_t pos = 0;
     while (!is_nil(iter)) {
         if (pos == index) {
-            return iter->data.list.car;
+            return coll_first(iter);
         }
-        iter = iter->data.list.cdr;
+        iter = coll_rest(iter);
         pos += 1;
     }
     set_error(error, "nth index out of bounds");
