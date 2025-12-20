@@ -7,6 +7,7 @@
 #include <math.h>
 #include <stdbool.h>
 #include <sys/types.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 typedef enum {
@@ -1781,6 +1782,168 @@ static Value *builtin_load(Value *args, Env *env, char **error) {
     return builtin_eval(eval_args, NULL, error);
 }
 
+static Value *builtin_sh(Value *args, Env *env, char **error) {
+    (void)env;
+    if (is_nil(args)) {
+        set_error(error, "sh expects a command string");
+        return NULL;
+    }
+
+    Value *cmd_value = args->data.list.car;
+    if (cmd_value->type != TYPE_STRING) {
+        set_error(error, "sh expects a string argument");
+        return NULL;
+    }
+
+    const char *cmd = cmd_value->data.string;
+
+    // Execute command using popen
+    FILE *pipe = popen(cmd, "r");
+    if (!pipe) {
+        set_error(error, "sh: failed to execute command");
+        return NULL;
+    }
+
+    // Read output
+    StringBuilder output;
+    sb_init(&output);
+    char buffer[4096];
+    while (fgets(buffer, sizeof(buffer), pipe) != NULL) {
+        sb_append(&output, buffer);
+    }
+
+    int status = pclose(pipe);
+
+    if (status != 0) {
+        char *output_str = sb_take(&output);
+        free(output_str);
+        set_error(error, "sh: command exited with non-zero status %d", status);
+        return NULL;
+    }
+
+    char *result = sb_take(&output);
+    Value *return_value = make_string_owned(result);
+    return return_value;
+}
+
+static Value *builtin_run(Value *args, Env *env, char **error) {
+    (void)env;
+    if (is_nil(args)) {
+        set_error(error, "run expects at least a program name");
+        return NULL;
+    }
+
+    // Count arguments and build argv array
+    size_t argc = 0;
+    Value *iter = args;
+    while (!is_nil(iter)) {
+        if (!is_list(iter)) {
+            set_error(error, "run: invalid argument list");
+            return NULL;
+        }
+        Value *arg = iter->data.list.car;
+        if (arg->type != TYPE_STRING && arg->type != TYPE_SYMBOL) {
+            set_error(error, "run: arguments must be strings or symbols");
+            return NULL;
+        }
+        argc++;
+        iter = iter->data.list.cdr;
+    }
+
+    // Allocate argv array (NULL-terminated)
+    char **argv = checked_malloc((argc + 1) * sizeof(char *));
+
+    // Fill argv array
+    iter = args;
+    size_t i = 0;
+    while (!is_nil(iter)) {
+        Value *arg = iter->data.list.car;
+        const char *arg_str = (arg->type == TYPE_STRING) ? arg->data.string : arg->data.string;
+        argv[i] = copy_text(arg_str);
+        i++;
+        iter = iter->data.list.cdr;
+    }
+    argv[argc] = NULL;
+
+    // Create pipe for reading child output
+    int pipefd[2];
+    if (pipe(pipefd) == -1) {
+        for (size_t j = 0; j < argc; j++) {
+            free(argv[j]);
+        }
+        free(argv);
+        set_error(error, "run: failed to create pipe");
+        return NULL;
+    }
+
+    pid_t pid = fork();
+    if (pid == -1) {
+        close(pipefd[0]);
+        close(pipefd[1]);
+        for (size_t j = 0; j < argc; j++) {
+            free(argv[j]);
+        }
+        free(argv);
+        set_error(error, "run: failed to fork");
+        return NULL;
+    }
+
+    if (pid == 0) {
+        // Child process
+        close(pipefd[0]); // Close read end
+        dup2(pipefd[1], STDOUT_FILENO); // Redirect stdout to pipe
+        dup2(pipefd[1], STDERR_FILENO); // Redirect stderr to pipe
+        close(pipefd[1]);
+
+        execvp(argv[0], argv);
+        // If execvp returns, it failed
+        fprintf(stderr, "run: failed to execute %s\n", argv[0]);
+        exit(127);
+    }
+
+    // Parent process
+    close(pipefd[1]); // Close write end
+
+    // Free argv in parent
+    for (size_t j = 0; j < argc; j++) {
+        free(argv[j]);
+    }
+    free(argv);
+
+    // Read output from child
+    StringBuilder output;
+    sb_init(&output);
+    char buffer[4096];
+    ssize_t bytes_read;
+    while ((bytes_read = read(pipefd[0], buffer, sizeof(buffer) - 1)) > 0) {
+        buffer[bytes_read] = '\0';
+        sb_append(&output, buffer);
+    }
+    close(pipefd[0]);
+
+    // Wait for child to finish
+    int status;
+    waitpid(pid, &status, 0);
+
+    if (WIFEXITED(status) && WEXITSTATUS(status) != 0) {
+        char *output_str = sb_take(&output);
+        free(output_str);
+        set_error(error, "run: command exited with status %d", WEXITSTATUS(status));
+        return NULL;
+    }
+
+    if (WIFSIGNALED(status)) {
+        char *output_str = sb_take(&output);
+        free(output_str);
+        set_error(error, "run: command terminated by signal %d", WTERMSIG(status));
+        return NULL;
+    }
+
+    char *result = sb_take(&output);
+    Value *return_value = make_string_owned(result);
+    return return_value;
+}
+
 static void register_builtin(Env *env, const char *name, NativeFn fn, const char *doc) {
     Value *value = make_native(fn, doc);
     env_define(env, name, value);
@@ -1813,6 +1976,8 @@ static void install_builtins(Env *env) {
     register_builtin(env, "slurp", builtin_slurp, "slurp");
     register_builtin(env, "spit", builtin_spit, "spit");
     register_builtin(env, "load", builtin_load, "load");
+    register_builtin(env, "sh", builtin_sh, "sh");
+    register_builtin(env, "run", builtin_run, "run");
     register_builtin(env, "help", builtin_help, "help");
 }
 
