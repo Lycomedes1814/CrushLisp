@@ -100,6 +100,10 @@ echo "(println \"Result:\" (+ 1 2 3))" | ./crushlisp -s
 - `(spit filename content)` - Write string to file
 - `(load filename)` - Read and evaluate Lisp file (equivalent to `(eval (slurp filename))`)
 
+**System:**
+- `(sh command)` - Execute shell command string, return output (supports pipes, wildcards, etc.)
+- `(run program args...)` - Execute program directly without shell, return output (safer for untrusted input)
+
 **Help:**
 - `(help)` - Show help message
 
@@ -159,6 +163,14 @@ CrushLisp includes built-in protection against common runtime issues:
 (spit "lib.lisp" "(def square (fn [x] (* x x)))")
 (load "lib.lisp")          ; Same as (eval (slurp "lib.lisp"))
 (square 5)  ; => 25
+
+; Shell commands (passed to shell, supports pipes/wildcards)
+(sh "echo hello | wc -c")  ; => "6\n"
+(sh "ls *.txt")            ; => list of .txt files
+
+; Direct program execution (no shell, safer)
+(run "cat" "file.txt")     ; => file contents
+(run "echo" "hello world") ; => "hello world\n"
 ```
 
 ## Installation

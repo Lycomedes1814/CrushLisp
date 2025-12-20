@@ -103,6 +103,8 @@ static const char *HELP_TEXT =
 "  (slurp filename)      read file contents\n"
 "  (spit filename content) write string to file\n"
 "  (load filename)       read and evaluate file (= eval + slurp)\n"
+"  (sh command)          execute shell command string, return output\n"
+"  (run program args...) execute program directly (no shell), return output\n"
 "  (help)                show this message\n";
 
 static Value VALUE_NIL = { TYPE_NIL, {0}, NULL };

@@ -128,23 +128,24 @@ CrushLisp/
    - `fn` (876-896): Anonymous functions (closure over current env), accepts `[]` or `()` for params
    - `do` (793-795): Sequential evaluation (implicit body)
 
-7. **Built-in Functions** (lines 1070-1800):
+7. **Built-in Functions** (lines 1070-2000):
    - Arithmetic: `+`, `-`, `*`, `/`, `mod`, `inc`, `dec`
    - Comparisons: `=`, `<`, `<=`, `>`, `>=`
    - Lists: `list`, `first`, `rest`, `cons`, `conj`, `count`, `nth`
    - Strings: `str` (concatenate)
    - I/O: `print`, `println` (flush stdout), `slurp` (read file), `spit` (write file)
    - Evaluation: `eval` (evaluate expression or string), `load` (read and eval file, implemented as `eval` + `slurp`)
+   - System: `sh` (execute shell command string), `run` (execute program directly without shell)
    - Meta: `help`
 
-8. **REPL** (lines 1850-1920):
+8. **REPL** (lines 2000-2100):
    - `repl`: Read-eval-print loop with continuation support
    - Detects interactive mode via `isatty(STDIN_FILENO)`
    - Multi-line input: accumulates when `PARSE_INCOMPLETE`
    - Prompts: `CrushLisp> ` (normal), `... ` (continuation)
    - Silent mode: skips printing eval results (but `print`/`println` still work)
 
-9. **Main** (lines 1922-1947):
+9. **Main** (lines 2100-2150):
    - Parses `-s` (silent) and `-h/--help` flags
    - Creates global env, installs builtins, starts REPL
    - Sets `global_environment` static variable for use by `eval` and `load` functions
@@ -321,7 +322,7 @@ echo "(test expression)" | ./crushlisp
 
 ### Adding a Built-in Function
 
-1. **Implement function** (follow pattern in lines 1070-1770):
+1. **Implement function** (follow pattern in lines 1070-1900):
    ```c
    static Value *builtin_yourfunc(Value *args, Env *env, char **error) {
        (void)env;  // Always unused for native functions (called with NULL)
@@ -336,12 +337,41 @@ echo "(test expression)" | ./crushlisp
    }
    ```
 
-2. **Register in `install_builtins`** (add line ~1777-1804):
+2. **Register in `install_builtins`** (add line ~2000-2040):
    ```c
    register_builtin(env, "yourfunc", builtin_yourfunc, "yourfunc");
    ```
 
-3. **Update `HELP_TEXT`** (lines 77-104) if user-facing
+3. **Update `HELP_TEXT`** (lines 79-109) if user-facing
+
+4. **Add test** in Makefile
+
+**Important**: Native functions are always called with `env=NULL` (see line 1176). If you need access to the global environment (e.g., for eval), use the `global_environment` static variable.
+
+### System Calls
+
+Two built-ins are provided for executing external programs:
+
+1. **`sh`** (line ~1785): Executes shell command string
+   - Takes single string argument
+   - Passed directly to `popen(cmd, "r")`
+   - Supports shell features (pipes, wildcards, variables, etc.)
+   - Example: `(sh "cat file.txt | grep pattern")`
+   - Use when you need shell features
+
+2. **`run`** (line ~1830): Executes program directly without shell
+   - Takes multiple arguments (program + args)
+   - Uses `fork()` + `execvp()` for direct execution
+   - No shell interpretation (safer for untrusted input)
+   - Example: `(run "cat" "file.txt")`
+   - Use when you don't need shell features and want safety
+
+Both capture stdout/stderr and return as string. Both error on non-zero exit status.
+   ```c
+   register_builtin(env, "yourfunc", builtin_yourfunc, "yourfunc");
+   ```
+
+3. **Update `HELP_TEXT`** (lines 79-109) if user-facing
 
 4. **Add test** in Makefile
 
