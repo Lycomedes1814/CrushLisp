@@ -155,11 +155,20 @@ CrushLisp/
 Currently contains:
 - `map`: Higher-order function for list transformation
   ```lisp
-  (def map (fn (f coll)
+  (def map (fn [f coll]
              (if (= coll nil)
                nil
                (cons (f (first coll))
                      (map f (rest coll))))))
+  ```
+- `filter`: Higher-order function for list filtering
+  ```lisp
+  (def filter (fn [f coll]
+                (if (= coll nil)
+                  nil
+                  (if (f (first coll))
+                    (cons (first coll) (filter f (rest coll)))
+                    (filter f (rest coll))))))
   ```
 
 **Note**: This file is NOT automatically loaded by the interpreter. Users must manually load it or copy definitions into their session.
@@ -246,12 +255,19 @@ if (!result || (error && *error)) {
 
 ### Number Comparison
 
-Use `EPSILON` for floating-point equality:
+Use exact `==` for numeric equality (as used in `value_equals`). `EPSILON` is still used
+for division-by-zero guards and integer-rounding checks, but **not** for `=` comparisons:
 
 ```c
-if (fabs(a - b) < EPSILON) {
-    // Numbers are equal
-}
+// Exact equality (matches = operator semantics)
+if (a == b) { ... }
+
+// Integer check (value_to_integer)
+double rounded = round(number);
+if (fabs(number - rounded) > EPSILON) { /* not an integer */ }
+
+// Division-by-zero guard
+if (fabs(divisor) < EPSILON) { /* treat as zero */ }
 ```
 
 ### StringBuilder Usage

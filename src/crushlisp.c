@@ -6,6 +6,7 @@
 #include <stdarg.h>
 #include <math.h>
 #include <stdbool.h>
+#include <errno.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -81,7 +82,7 @@ static const char *HELP_TEXT =
 "  (quote x)          return x without evaluation\n"
 "  (if test then else) conditional branching\n"
 "  (def name value)   bind a global name\n"
-"  (let (name value ...) body...) scoped locals\n"
+"  (let [name value ...] body...) scoped locals ([] or () for bindings)\n"
 "  (fn [params...] body...) anonymous function ([] or () for params)\n"
 "  (do expr...)       evaluate expressions sequentially\n\n"
 "Data structures:\n"
@@ -97,6 +98,7 @@ static const char *HELP_TEXT =
 "  (count coll)          collection size\n"
 "  (nth coll index)      element at index\n"
 "  (str values...)       concatenate\n"
+"  (split s delim)       split string on one-character delimiter\n"
 "  (print values...)     write without newline\n"
 "  (println values...)   write with newline\n"
 "  (eval expr)           evaluate expression or string\n"
@@ -105,7 +107,10 @@ static const char *HELP_TEXT =
 "  (load filename)       read and evaluate file (= eval + slurp)\n"
 "  (sh command)          execute shell command string, return output\n"
 "  (run program args...) execute program directly (no shell), return output\n"
-"  (help)                show this message\n";
+"  (help)                show this message\n\n"
+"Type predicates:\n"
+"  (nil? x)    (number? x)  (string? x)  (bool? x)\n"
+"  (symbol? x) (list? x)    (vector? x)  (fn? x)\n";
 
 static Value VALUE_NIL = { TYPE_NIL, {0}, NULL };
 static Value VALUE_TRUE = { TYPE_BOOL, { .boolean = 1 }, NULL };
@@ -182,9 +187,7 @@ static void sb_append(StringBuilder *sb, const char *text) {
         memcpy(sb->data + sb->length, text, len);
     }
     sb->length += len;
-    if (sb->data) {
-        sb->data[sb->length] = '\0';
-    }
+    sb->data[sb->length] = '\0';
 }
 
 static void sb_append_char(StringBuilder *sb, char c) {
@@ -295,6 +298,46 @@ static size_t list_length(Value *list) {
     return count;
 }
 
+static int require_exact_args(Value *args, size_t expected, char **error, const char *name) {
+    size_t count = 0;
+    Value *iter = args;
+    while (!is_nil(iter)) {
+        if (!is_list(iter)) {
+            set_error(error, "%s received a malformed argument list", name);
+            return 0;
+        }
+        count += 1;
+        iter = iter->data.list.cdr;
+    }
+    if (count != expected) {
+        set_error(error, "%s expects exactly %zu argument%s", name, expected, expected == 1 ? "" : "s");
+        return 0;
+    }
+    return 1;
+}
+
+static int require_arg_range(Value *args, size_t minimum, size_t maximum, char **error, const char *name) {
+    size_t count = 0;
+    Value *iter = args;
+    while (!is_nil(iter)) {
+        if (!is_list(iter)) {
+            set_error(error, "%s received a malformed argument list", name);
+            return 0;
+        }
+        count += 1;
+        iter = iter->data.list.cdr;
+    }
+    if (count < minimum || count > maximum) {
+        if (minimum == maximum) {
+            set_error(error, "%s expects exactly %zu argument%s", name, minimum, minimum == 1 ? "" : "s");
+        } else {
+            set_error(error, "%s expects between %zu and %zu arguments", name, minimum, maximum);
+        }
+        return 0;
+    }
+    return 1;
+}
+
 static Value *list_from_array(Value **items, size_t count) {
     Value *result = value_nil();
     for (size_t i = 0; i < count; ++i) {
@@ -381,7 +424,7 @@ static int value_equals(Value *a, Value *b) {
         case TYPE_NIL:
             return 1;
         case TYPE_NUMBER:
-            return fabs(a->data.number - b->data.number) < EPSILON;
+            return a->data.number == b->data.number;
         case TYPE_BOOL:
             return a->data.boolean == b->data.boolean;
         case TYPE_STRING:
@@ -425,16 +468,27 @@ static int value_equals(Value *a, Value *b) {
 }
 
 static void append_number(StringBuilder *sb, double number) {
-    long long integral = (long long)llround(number);
-    if (fabs(number - (double)integral) < EPSILON) {
-        char buffer[64];
-        snprintf(buffer, sizeof(buffer), "%lld", integral);
-        sb_append(sb, buffer);
-    } else {
-        char buffer[64];
-        snprintf(buffer, sizeof(buffer), "%.10g", number);
-        sb_append(sb, buffer);
+    if (isinf(number)) {
+        sb_append(sb, number > 0 ? "Inf" : "-Inf");
+        return;
     }
+    if (isnan(number)) {
+        sb_append(sb, "NaN");
+        return;
+    }
+    // Only use integer representation if the value fits in a long long
+    if (fabs(number) < 9.2e18) {
+        long long integral = llround(number);
+        if (fabs(number - (double)integral) < EPSILON) {
+            char buffer[64];
+            snprintf(buffer, sizeof(buffer), "%lld", integral);
+            sb_append(sb, buffer);
+            return;
+        }
+    }
+    char buffer[64];
+    snprintf(buffer, sizeof(buffer), "%.10g", number);
+    sb_append(sb, buffer);
 }
 
 static void write_value(StringBuilder *sb, Value *value, int readable) {
@@ -563,7 +617,7 @@ static int value_to_integer(Value *value, long long *out, char **error, const ch
     if (!value_to_number(value, &number, error, context)) {
         return 0;
     }
-    double rounded = floor(number + 0.5);
+    double rounded = round(number);
     if (fabs(number - rounded) > EPSILON) {
         set_error(error, "%s expects integer inputs", context);
         return 0;
@@ -820,30 +874,21 @@ static Value *eval(Value *expr, Env *env, char **error);
 static Value *eval_block(Value *forms, Env *env, char **error);
 static Value *eval_args(Value *list, Env *env, char **error);
 static Value *apply_function_value(Value *callable, Value *args, char **error);
+static Value *vector_to_list(Value *vec);
 
 static Value *eval_quote(Value *args, char **error) {
-    (void)error;
-    if (is_nil(args) || !is_list(args) || (!is_nil(args->data.list.cdr) && !is_list(args->data.list.cdr))) {
-        return args->data.list.car;
+    if (!require_exact_args(args, 1, error, "quote")) {
+        return NULL;
     }
-    if (is_nil(args)) {
-        return value_nil();
-    }
-    Value *value = args->data.list.car;
-    return value;
+    return args->data.list.car;
 }
 
 static Value *eval_if(Value *args, Env *env, char **error) {
-    if (is_nil(args) || !is_list(args)) {
-        set_error(error, "if expects test form");
+    if (!require_arg_range(args, 2, 3, error, "if")) {
         return NULL;
     }
     Value *test_expr = args->data.list.car;
     Value *rest = args->data.list.cdr;
-    if (is_nil(rest) || !is_list(rest)) {
-        set_error(error, "if expects then form");
-        return NULL;
-    }
     Value *then_expr = rest->data.list.car;
     Value *else_expr = rest->data.list.cdr;
     Value *cond = eval(test_expr, env, error);
@@ -865,18 +910,13 @@ static Value *eval_do(Value *args, Env *env, char **error) {
 }
 
 static Value *eval_def(Value *args, Env *env, char **error) {
-    if (is_nil(args) || !is_list(args)) {
-        set_error(error, "def expects symbol and value");
+    if (!require_exact_args(args, 2, error, "def")) {
         return NULL;
     }
     Value *name_form = args->data.list.car;
     Value *rest = args->data.list.cdr;
     if (!name_form || name_form->type != TYPE_SYMBOL) {
         set_error(error, "def name must be a symbol");
-        return NULL;
-    }
-    if (is_nil(rest)) {
-        set_error(error, "def expects a value");
         return NULL;
     }
     Value *value_expr = rest->data.list.car;
@@ -895,12 +935,14 @@ static Value *eval_let(Value *args, Env *env, char **error) {
         return NULL;
     }
     Value *binding_form = args->data.list.car;
-    if (!(is_nil(binding_form) || is_list(binding_form))) {
-        set_error(error, "let bindings must be a list");
+    if (!(is_nil(binding_form) || is_list(binding_form) || is_vector(binding_form))) {
+        set_error(error, "let bindings must be a list or vector");
         return NULL;
     }
+    // Normalize vector bindings to a list for uniform iteration
+    Value *bindings = is_vector(binding_form) ? vector_to_list(binding_form) : binding_form;
     Env *child = env_create(env);
-    Value *iter = binding_form;
+    Value *iter = bindings;
     while (!is_nil(iter)) {
         if (!is_list(iter)) {
             set_error(error, "let bindings must be pairs");
@@ -1035,18 +1077,17 @@ static Value *eval(Value *expr, Env *env, char **error) {
             Value **items = NULL;
             size_t count = 0;
             size_t capacity = 0;
+            int had_error = 0;
             while (!is_nil(iter)) {
                 if (!is_vector(iter)) {
                     set_error(error, "Malformed vector");
-                    free(items);
-                    result = NULL;
+                    had_error = 1;
                     break;
                 }
                 Value *element = iter->data.vector.car;
                 Value *evaluated = eval(element, env, error);
                 if (!evaluated || (error && *error)) {
-                    free(items);
-                    result = NULL;
+                    had_error = 1;
                     break;
                 }
                 if (count == capacity) {
@@ -1056,7 +1097,10 @@ static Value *eval(Value *expr, Env *env, char **error) {
                 items[count++] = evaluated;
                 iter = iter->data.vector.cdr;
             }
-            if (result == NULL && (!error || !*error)) {
+            if (had_error) {
+                free(items);
+                result = NULL;
+            } else {
                 result = vector_from_array(items, count);
                 free(items);
             }
@@ -1112,7 +1156,7 @@ static Value *eval(Value *expr, Env *env, char **error) {
                 break;
             }
             Value *evaluated_args = eval_args(args, env, error);
-            if ((error && *error)) {
+            if (!evaluated_args || (error && *error)) {
                 result = NULL;
                 break;
             }
@@ -1187,9 +1231,11 @@ static Value *apply_function_value(Value *callable, Value *args, char **error) {
         Value *param_iter = params;
         Value *arg_iter = args;
         size_t expected = list_length(params);
+        size_t actual = list_length(args);
         while (!is_nil(param_iter)) {
             if (is_nil(arg_iter)) {
-                set_error(error, "Expected %zu arguments", expected);
+                set_error(error, "Expected %zu argument%s, got %zu",
+                          expected, expected == 1 ? "" : "s", actual);
                 return NULL;
             }
             Value *param_name = param_iter->data.list.car;
@@ -1203,7 +1249,7 @@ static Value *apply_function_value(Value *callable, Value *args, char **error) {
             arg_iter = arg_iter->data.list.cdr;
         }
         if (!is_nil(arg_iter)) {
-            set_error(error, "Too many arguments");
+            set_error(error, "Too many arguments: expected %zu, got %zu", expected, actual);
             return NULL;
         }
         return eval_block(callable->data.function.body, frame, error);
@@ -1306,8 +1352,7 @@ static Value *builtin_div(Value *args, Env *env, char **error) {
 
 static Value *builtin_mod(Value *args, Env *env, char **error) {
     (void)env;
-    if (is_nil(args) || is_nil(args->data.list.cdr)) {
-        set_error(error, "mod expects two arguments");
+    if (!require_exact_args(args, 2, error, "mod")) {
         return NULL;
     }
     double a;
@@ -1325,8 +1370,7 @@ static Value *builtin_mod(Value *args, Env *env, char **error) {
 
 static Value *builtin_inc(Value *args, Env *env, char **error) {
     (void)env;
-    if (is_nil(args)) {
-        set_error(error, "inc expects one argument");
+    if (!require_exact_args(args, 1, error, "inc")) {
         return NULL;
     }
     double number;
@@ -1338,8 +1382,7 @@ static Value *builtin_inc(Value *args, Env *env, char **error) {
 
 static Value *builtin_dec(Value *args, Env *env, char **error) {
     (void)env;
-    if (is_nil(args)) {
-        set_error(error, "dec expects one argument");
+    if (!require_exact_args(args, 1, error, "dec")) {
         return NULL;
     }
     double number;
@@ -1432,14 +1475,6 @@ static Value *builtin_list(Value *args, Env *env, char **error) {
     return args;
 }
 
-static Value *ensure_list(Value *value, char **error, const char *name) {
-    if (is_nil(value) || is_list(value)) {
-        return value;
-    }
-    set_error(error, "%s expects a list", name);
-    return NULL;
-}
-
 static Value *ensure_collection(Value *value, char **error, const char *name) {
     if (is_nil(value) || is_list(value) || is_vector(value)) {
         return value;
@@ -1493,8 +1528,7 @@ static size_t coll_length(Value *coll) {
 
 static Value *builtin_first(Value *args, Env *env, char **error) {
     (void)env;
-    if (is_nil(args)) {
-        set_error(error, "first expects a collection");
+    if (!require_exact_args(args, 1, error, "first")) {
         return NULL;
     }
     Value *coll = ensure_collection(args->data.list.car, error, "first");
@@ -1506,8 +1540,7 @@ static Value *builtin_first(Value *args, Env *env, char **error) {
 
 static Value *builtin_rest(Value *args, Env *env, char **error) {
     (void)env;
-    if (is_nil(args)) {
-        set_error(error, "rest expects a collection");
+    if (!require_exact_args(args, 1, error, "rest")) {
         return NULL;
     }
     Value *coll = ensure_collection(args->data.list.car, error, "rest");
@@ -1519,16 +1552,17 @@ static Value *builtin_rest(Value *args, Env *env, char **error) {
 
 static Value *builtin_cons(Value *args, Env *env, char **error) {
     (void)env;
-    if (is_nil(args) || is_nil(args->data.list.cdr)) {
-        set_error(error, "cons expects value and list");
+    if (!require_exact_args(args, 2, error, "cons")) {
         return NULL;
     }
     Value *value = args->data.list.car;
-    Value *list_value = ensure_list(args->data.list.cdr->data.list.car, error, "cons");
-    if (!list_value && !(error && *error)) {
+    Value *coll = ensure_collection(args->data.list.cdr->data.list.car, error, "cons");
+    if (!coll && (error && *error)) {
         return NULL;
     }
-    return cons(value, list_value);
+    // cons always returns a list node; for vectors, convert to list first
+    Value *tail = is_vector(coll) ? vector_to_list(coll) : coll;
+    return cons(value, tail);
 }
 
 static Value *builtin_conj(Value *args, Env *env, char **error) {
@@ -1537,28 +1571,62 @@ static Value *builtin_conj(Value *args, Env *env, char **error) {
         set_error(error, "conj expects a collection");
         return NULL;
     }
-    Value *coll = ensure_list(args->data.list.car, error, "conj");
-    if (!coll && !(error && *error)) {
+    Value *coll = ensure_collection(args->data.list.car, error, "conj");
+    if (!coll && (error && *error)) {
         return NULL;
     }
-    Value *result = coll;
+    int coll_is_vector = is_vector(coll);
     Value *iter = args->data.list.cdr;
-    while (!is_nil(iter)) {
-        if (!is_list(iter)) {
-            set_error(error, "Invalid conj arguments");
-            return NULL;
+    if (coll_is_vector) {
+        // For vectors: collect all existing elements plus new ones, build a new vector
+        Value **items = NULL;
+        size_t count = 0;
+        size_t capacity = 0;
+        // Collect existing vector elements
+        Value *viter = coll;
+        while (!is_nil(viter) && is_vector(viter)) {
+            if (count == capacity) {
+                capacity = capacity ? capacity * 2 : 4;
+                items = checked_realloc(items, capacity * sizeof(Value *));
+            }
+            items[count++] = viter->data.vector.car;
+            viter = viter->data.vector.cdr;
         }
-        Value *value = iter->data.list.car;
-        result = cons(value, result);
-        iter = iter->data.list.cdr;
+        // Append new values
+        while (!is_nil(iter)) {
+            if (!is_list(iter)) {
+                free(items);
+                set_error(error, "Invalid conj arguments");
+                return NULL;
+            }
+            if (count == capacity) {
+                capacity = capacity ? capacity * 2 : 4;
+                items = checked_realloc(items, capacity * sizeof(Value *));
+            }
+            items[count++] = iter->data.list.car;
+            iter = iter->data.list.cdr;
+        }
+        Value *result = vector_from_array(items, count);
+        free(items);
+        return result;
+    } else {
+        // For lists: prepend each new value (Clojure semantics: each element prepended)
+        Value *result = coll;
+        while (!is_nil(iter)) {
+            if (!is_list(iter)) {
+                set_error(error, "Invalid conj arguments");
+                return NULL;
+            }
+            result = cons(iter->data.list.car, result);
+            iter = iter->data.list.cdr;
+        }
+        return result;
     }
-    return result;
 }
 
 static Value *builtin_count(Value *args, Env *env, char **error) {
     (void)env;
-    if (is_nil(args)) {
-        set_error(error, "count expects a collection");
+    if (!require_exact_args(args, 1, error, "count")) {
         return NULL;
     }
     Value *value = args->data.list.car;
@@ -1577,17 +1645,28 @@ static Value *builtin_count(Value *args, Env *env, char **error) {
 
 static Value *builtin_nth(Value *args, Env *env, char **error) {
     (void)env;
-    if (is_nil(args) || is_nil(args->data.list.cdr)) {
-        set_error(error, "nth expects collection and index");
+    if (!require_exact_args(args, 2, error, "nth")) {
         return NULL;
     }
-    Value *coll = ensure_collection(args->data.list.car, error, "nth");
-    if (!coll && !(error && *error)) {
-        return NULL;
-    }
+    Value *coll_val = args->data.list.car;
     Value *index_value = args->data.list.cdr->data.list.car;
     size_t index;
     if (!value_to_index(index_value, &index, error, "nth")) {
+        return NULL;
+    }
+    // Support string character access
+    if (coll_val && coll_val->type == TYPE_STRING) {
+        const char *str = coll_val->data.string;
+        size_t len = strlen(str);
+        if (index >= len) {
+            set_error(error, "nth: index %zu out of bounds (string length %zu)", index, len);
+            return NULL;
+        }
+        char ch[2] = { str[index], '\0' };
+        return make_string_owned(copy_text(ch));
+    }
+    Value *coll = ensure_collection(coll_val, error, "nth");
+    if (!coll && (error && *error)) {
         return NULL;
     }
     Value *iter = coll;
@@ -1599,7 +1678,7 @@ static Value *builtin_nth(Value *args, Env *env, char **error) {
         iter = coll_rest(iter);
         pos += 1;
     }
-    set_error(error, "nth index out of bounds");
+    set_error(error, "nth: index %zu out of bounds (collection size %zu)", index, pos);
     return NULL;
 }
 
@@ -1620,8 +1699,7 @@ static Value *builtin_str(Value *args, Env *env, char **error) {
 
 static Value *builtin_split(Value *args, Env *env, char **error) {
     (void)env;
-    if (is_nil(args) || is_nil(args->data.list.cdr)) {
-        set_error(error, "split expects a string and a delimiter character");
+    if (!require_exact_args(args, 2, error, "split")) {
         return NULL;
     }
     Value *str_val = args->data.list.car;
@@ -1656,7 +1734,7 @@ static Value *builtin_split(Value *args, Env *env, char **error) {
         end++;
     }
     size_t len = end - start;
-    if (len > 0) {
+    {
         char *substr = checked_malloc(len + 1);
         memcpy(substr, start, len);
         substr[len] = '\0';
@@ -1709,8 +1787,7 @@ static Value *builtin_help(Value *args, Env *env, char **error) {
 
 static Value *builtin_eval(Value *args, Env *env, char **error) {
     (void)env;
-    if (is_nil(args)) {
-        set_error(error, "eval expects an expression");
+    if (!require_exact_args(args, 1, error, "eval")) {
         return NULL;
     }
     Value *expr_val = args->data.list.car;
@@ -1726,13 +1803,17 @@ static Value *builtin_eval(Value *args, Env *env, char **error) {
             ParseStatus status = parse_expr(str + total_consumed, &consumed, &parsed, error);
 
             if (status == PARSE_ERROR) {
-                if (!*error) {
+                if (!error || !*error) {
                     set_error(error, "eval: failed to parse string");
                 }
                 return NULL;
             }
-            if (status == PARSE_END || status == PARSE_INCOMPLETE) {
+            if (status == PARSE_END) {
                 break;
+            }
+            if (status == PARSE_INCOMPLETE) {
+                set_error(error, "eval: unexpected end of expression");
+                return NULL;
             }
             if (!parsed) {
                 break;
@@ -1752,8 +1833,7 @@ static Value *builtin_eval(Value *args, Env *env, char **error) {
 
 static Value *builtin_slurp(Value *args, Env *env, char **error) {
     (void)env;
-    if (is_nil(args)) {
-        set_error(error, "slurp expects a filename");
+    if (!require_exact_args(args, 1, error, "slurp")) {
         return NULL;
     }
     Value *filename_val = args->data.list.car;
@@ -1771,10 +1851,16 @@ static Value *builtin_slurp(Value *args, Env *env, char **error) {
     sb_init(&sb);
     char buffer[4096];
     size_t bytes_read;
-    while ((bytes_read = fread(buffer, 1, sizeof(buffer), file)) > 0) {
-        for (size_t i = 0; i < bytes_read; i++) {
-            sb_append_char(&sb, buffer[i]);
-        }
+    while ((bytes_read = fread(buffer, 1, sizeof(buffer) - 1, file)) > 0) {
+        buffer[bytes_read] = '\0';
+        sb_append(&sb, buffer);
+    }
+    if (ferror(file)) {
+        fclose(file);
+        char *partial = sb_take(&sb);
+        free(partial);
+        set_error(error, "slurp: I/O error reading '%s'", filename_val->data.string);
+        return NULL;
     }
     fclose(file);
     return make_string_owned(sb_take(&sb));
@@ -1782,8 +1868,7 @@ static Value *builtin_slurp(Value *args, Env *env, char **error) {
 
 static Value *builtin_spit(Value *args, Env *env, char **error) {
     (void)env;
-    if (is_nil(args) || is_nil(args->data.list.cdr)) {
-        set_error(error, "spit expects a filename and content");
+    if (!require_exact_args(args, 2, error, "spit")) {
         return NULL;
     }
     Value *filename_val = args->data.list.car;
@@ -1815,8 +1900,7 @@ static Value *builtin_spit(Value *args, Env *env, char **error) {
 
 static Value *builtin_load(Value *args, Env *env, char **error) {
     (void)env;
-    if (is_nil(args)) {
-        set_error(error, "load expects a filename");
+    if (!require_exact_args(args, 1, error, "load")) {
         return NULL;
     }
     Value *filename_val = args->data.list.car;
@@ -1839,8 +1923,7 @@ static Value *builtin_load(Value *args, Env *env, char **error) {
 
 static Value *builtin_sh(Value *args, Env *env, char **error) {
     (void)env;
-    if (is_nil(args)) {
-        set_error(error, "sh expects a command string");
+    if (!require_exact_args(args, 1, error, "sh")) {
         return NULL;
     }
 
@@ -1869,10 +1952,24 @@ static Value *builtin_sh(Value *args, Env *env, char **error) {
 
     int status = pclose(pipe);
 
-    if (status != 0) {
+    if (status == -1) {
         char *output_str = sb_take(&output);
         free(output_str);
-        set_error(error, "sh: command exited with non-zero status %d", status);
+        set_error(error, "sh: failed to close command pipe");
+        return NULL;
+    }
+
+    if (WIFEXITED(status) && WEXITSTATUS(status) != 0) {
+        char *output_str = sb_take(&output);
+        free(output_str);
+        set_error(error, "sh: command exited with status %d", WEXITSTATUS(status));
+        return NULL;
+    }
+
+    if (WIFSIGNALED(status)) {
+        char *output_str = sb_take(&output);
+        free(output_str);
+        set_error(error, "sh: command terminated by signal %d", WTERMSIG(status));
         return NULL;
     }
 
@@ -1913,7 +2010,7 @@ static Value *builtin_run(Value *args, Env *env, char **error) {
     size_t i = 0;
     while (!is_nil(iter)) {
         Value *arg = iter->data.list.car;
-        const char *arg_str = (arg->type == TYPE_STRING) ? arg->data.string : arg->data.string;
+        const char *arg_str = arg->data.string;
         argv[i] = copy_text(arg_str);
         i++;
         iter = iter->data.list.cdr;
@@ -1953,7 +2050,7 @@ static Value *builtin_run(Value *args, Env *env, char **error) {
         execvp(argv[0], argv);
         // If execvp returns, it failed
         fprintf(stderr, "run: failed to execute %s\n", argv[0]);
-        exit(127);
+        _exit(127);
     }
 
     // Parent process
@@ -1970,11 +2067,26 @@ static Value *builtin_run(Value *args, Env *env, char **error) {
     sb_init(&output);
     char buffer[4096];
     ssize_t bytes_read;
-    while ((bytes_read = read(pipefd[0], buffer, sizeof(buffer) - 1)) > 0) {
+    int read_error = 0;
+    while ((bytes_read = read(pipefd[0], buffer, sizeof(buffer) - 1)) != 0) {
+        if (bytes_read < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            read_error = 1;
+            break;
+        }
         buffer[bytes_read] = '\0';
         sb_append(&output, buffer);
     }
     close(pipefd[0]);
+    if (read_error) {
+        char *partial = sb_take(&output);
+        free(partial);
+        waitpid(pid, NULL, 0);
+        set_error(error, "run: I/O error reading command output");
+        return NULL;
+    }
 
     // Wait for child to finish
     int status;
@@ -1997,6 +2109,78 @@ static Value *builtin_run(Value *args, Env *env, char **error) {
     char *result = sb_take(&output);
     Value *return_value = make_string_owned(result);
     return return_value;
+}
+
+static Value *builtin_is_nil(Value *args, Env *env, char **error) {
+    (void)env;
+    if (!require_exact_args(args, 1, error, "nil?")) {
+        return NULL;
+    }
+    return is_nil(args->data.list.car) ? value_true() : value_false();
+}
+
+static Value *builtin_is_number(Value *args, Env *env, char **error) {
+    (void)env;
+    if (!require_exact_args(args, 1, error, "number?")) {
+        return NULL;
+    }
+    Value *v = args->data.list.car;
+    return (v && v->type == TYPE_NUMBER) ? value_true() : value_false();
+}
+
+static Value *builtin_is_string(Value *args, Env *env, char **error) {
+    (void)env;
+    if (!require_exact_args(args, 1, error, "string?")) {
+        return NULL;
+    }
+    Value *v = args->data.list.car;
+    return (v && v->type == TYPE_STRING) ? value_true() : value_false();
+}
+
+static Value *builtin_is_bool(Value *args, Env *env, char **error) {
+    (void)env;
+    if (!require_exact_args(args, 1, error, "bool?")) {
+        return NULL;
+    }
+    Value *v = args->data.list.car;
+    return (v && v->type == TYPE_BOOL) ? value_true() : value_false();
+}
+
+static Value *builtin_is_symbol(Value *args, Env *env, char **error) {
+    (void)env;
+    if (!require_exact_args(args, 1, error, "symbol?")) {
+        return NULL;
+    }
+    Value *v = args->data.list.car;
+    return (v && v->type == TYPE_SYMBOL) ? value_true() : value_false();
+}
+
+static Value *builtin_is_list(Value *args, Env *env, char **error) {
+    (void)env;
+    if (!require_exact_args(args, 1, error, "list?")) {
+        return NULL;
+    }
+    Value *v = args->data.list.car;
+    return (is_nil(v) || is_list(v)) ? value_true() : value_false();
+}
+
+static Value *builtin_is_vector(Value *args, Env *env, char **error) {
+    (void)env;
+    if (!require_exact_args(args, 1, error, "vector?")) {
+        return NULL;
+    }
+    Value *v = args->data.list.car;
+    return is_vector(v) ? value_true() : value_false();
+}
+
+static Value *builtin_is_fn(Value *args, Env *env, char **error) {
+    (void)env;
+    if (!require_exact_args(args, 1, error, "fn?")) {
+        return NULL;
+    }
+    Value *v = args->data.list.car;
+    return (v && (v->type == TYPE_FUNCTION || v->type == TYPE_NATIVE_FUNCTION))
+           ? value_true() : value_false();
 }
 
 static void register_builtin(Env *env, const char *name, NativeFn fn, const char *doc) {
@@ -2035,6 +2219,14 @@ static void install_builtins(Env *env) {
     register_builtin(env, "sh", builtin_sh, "sh");
     register_builtin(env, "run", builtin_run, "run");
     register_builtin(env, "help", builtin_help, "help");
+    register_builtin(env, "nil?", builtin_is_nil, "nil?");
+    register_builtin(env, "number?", builtin_is_number, "number?");
+    register_builtin(env, "string?", builtin_is_string, "string?");
+    register_builtin(env, "bool?", builtin_is_bool, "bool?");
+    register_builtin(env, "symbol?", builtin_is_symbol, "symbol?");
+    register_builtin(env, "list?", builtin_is_list, "list?");
+    register_builtin(env, "vector?", builtin_is_vector, "vector?");
+    register_builtin(env, "fn?", builtin_is_fn, "fn?");
 }
 
 static void append_input(char **buffer, size_t *length, size_t *capacity, const char *line) {
