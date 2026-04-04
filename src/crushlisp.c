@@ -84,13 +84,17 @@ static const char *HELP_TEXT =
 "  (def name value)   bind a global name\n"
 "  (let [name value ...] body...) scoped locals ([] or () for bindings)\n"
 "  (fn [params...] body...) anonymous function ([] or () for params)\n"
-"  (do expr...)       evaluate expressions sequentially\n\n"
+"    variadic: (fn [a b & rest] body) - rest gets remaining args as list\n"
+"  (do expr...)       evaluate expressions sequentially\n"
+"  (and expr...)      short-circuit logical and, returns last truthy or first falsy\n"
+"  (or expr...)       short-circuit logical or, returns first truthy or last falsy\n\n"
 "Data structures:\n"
 "  (list values...)   list literal (for code/function calls)\n"
 "  [values...]        vector literal (for data)\n\n"
 "Functions:\n"
 "  (+ - * / mod inc dec) arithmetic\n"
 "  (= < <= > >=)         comparisons\n"
+"  (not x)               logical negation\n"
 "  (first coll)          first element\n"
 "  (rest coll)           remaining elements\n"
 "  (cons x coll)         prepend value\n"
@@ -871,9 +875,7 @@ static ParseStatus parse_expr(const char *input, size_t *consumed, Value **out, 
 }
 
 static Value *eval(Value *expr, Env *env, char **error);
-static Value *eval_block(Value *forms, Env *env, char **error);
 static Value *eval_args(Value *list, Env *env, char **error);
-static Value *apply_function_value(Value *callable, Value *args, char **error);
 static Value *vector_to_list(Value *vec);
 
 static Value *eval_quote(Value *args, char **error) {
@@ -881,32 +883,6 @@ static Value *eval_quote(Value *args, char **error) {
         return NULL;
     }
     return args->data.list.car;
-}
-
-static Value *eval_if(Value *args, Env *env, char **error) {
-    if (!require_arg_range(args, 2, 3, error, "if")) {
-        return NULL;
-    }
-    Value *test_expr = args->data.list.car;
-    Value *rest = args->data.list.cdr;
-    Value *then_expr = rest->data.list.car;
-    Value *else_expr = rest->data.list.cdr;
-    Value *cond = eval(test_expr, env, error);
-    if (!cond || (error && *error)) {
-        return NULL;
-    }
-    if (is_truthy(cond)) {
-        return eval(then_expr, env, error);
-    }
-    if (is_nil(else_expr)) {
-        return value_nil();
-    }
-    Value *else_form = else_expr->data.list.car;
-    return eval(else_form, env, error);
-}
-
-static Value *eval_do(Value *args, Env *env, char **error) {
-    return eval_block(args, env, error);
 }
 
 static Value *eval_def(Value *args, Env *env, char **error) {
@@ -929,66 +905,33 @@ static Value *eval_def(Value *args, Env *env, char **error) {
     return evaluated;
 }
 
-static Value *eval_let(Value *args, Env *env, char **error) {
-    if (is_nil(args) || !is_list(args)) {
-        set_error(error, "let expects binding list and body");
-        return NULL;
-    }
-    Value *binding_form = args->data.list.car;
-    if (!(is_nil(binding_form) || is_list(binding_form) || is_vector(binding_form))) {
-        set_error(error, "let bindings must be a list or vector");
-        return NULL;
-    }
-    // Normalize vector bindings to a list for uniform iteration
-    Value *bindings = is_vector(binding_form) ? vector_to_list(binding_form) : binding_form;
-    Env *child = env_create(env);
-    Value *iter = bindings;
-    while (!is_nil(iter)) {
-        if (!is_list(iter)) {
-            set_error(error, "let bindings must be pairs");
-            return NULL;
-        }
-        Value *name_value = iter->data.list.car;
-        iter = iter->data.list.cdr;
-        if (is_nil(iter)) {
-            set_error(error, "let binding missing value");
-            return NULL;
-        }
-        Value *expr_value = iter->data.list.car;
-        iter = iter->data.list.cdr;
-        if (!name_value || name_value->type != TYPE_SYMBOL) {
-            set_error(error, "let binding name must be symbol");
-            return NULL;
-        }
-        Value *evaluated = eval(expr_value, child, error);
-        if (!evaluated || (error && *error)) {
-            return NULL;
-        }
-        env_define(child, name_value->data.string, evaluated);
-    }
-    Value *body = args->data.list.cdr;
-    return eval_block(body, child, error);
-}
-
 static int params_are_symbols(Value *params) {
     Value *iter = params;
+    int seen_rest = 0;
+    int rest_count = 0;
     while (!is_nil(iter)) {
+        Value *item = NULL;
         if (is_list(iter)) {
-            Value *item = iter->data.list.car;
-            if (!item || item->type != TYPE_SYMBOL) {
-                return 0;
-            }
+            item = iter->data.list.car;
             iter = iter->data.list.cdr;
         } else if (is_vector(iter)) {
-            Value *item = iter->data.vector.car;
-            if (!item || item->type != TYPE_SYMBOL) {
-                return 0;
-            }
+            item = iter->data.vector.car;
             iter = iter->data.vector.cdr;
         } else {
             return 0;
         }
+        if (!item || item->type != TYPE_SYMBOL) {
+            return 0;
+        }
+        if (strcmp(item->data.string, "&") == 0) {
+            if (seen_rest) return 0;  /* & used twice */
+            seen_rest = 1;
+        } else if (seen_rest) {
+            rest_count++;
+            if (rest_count > 1) return 0;  /* more than one param after & */
+        }
     }
+    if (seen_rest && rest_count == 0) return 0;  /* & with no following param */
     return 1;
 }
 
@@ -1046,151 +989,6 @@ static Value *eval_fn(Value *args, Env *env, char **error) {
     return make_function(params_list, body, env);
 }
 
-static Value *eval(Value *expr, Env *env, char **error) {
-    if (!expr) {
-        return value_nil();
-    }
-
-    current_eval_depth++;
-    if (current_eval_depth > MAX_EVAL_DEPTH) {
-        current_eval_depth--;
-        set_error(error, "Stack overflow: recursion depth exceeded");
-        return NULL;
-    }
-
-    Value *result = NULL;
-    switch (expr->type) {
-        case TYPE_NUMBER:
-        case TYPE_BOOL:
-        case TYPE_STRING:
-        case TYPE_FUNCTION:
-        case TYPE_NATIVE_FUNCTION:
-        case TYPE_NIL:
-            result = expr;
-            break;
-        case TYPE_VECTOR: {
-            if (is_nil(expr)) {
-                result = expr;
-                break;
-            }
-            Value *iter = expr;
-            Value **items = NULL;
-            size_t count = 0;
-            size_t capacity = 0;
-            int had_error = 0;
-            while (!is_nil(iter)) {
-                if (!is_vector(iter)) {
-                    set_error(error, "Malformed vector");
-                    had_error = 1;
-                    break;
-                }
-                Value *element = iter->data.vector.car;
-                Value *evaluated = eval(element, env, error);
-                if (!evaluated || (error && *error)) {
-                    had_error = 1;
-                    break;
-                }
-                if (count == capacity) {
-                    capacity = capacity ? capacity * 2 : 4;
-                    items = checked_realloc(items, capacity * sizeof(Value *));
-                }
-                items[count++] = evaluated;
-                iter = iter->data.vector.cdr;
-            }
-            if (had_error) {
-                free(items);
-                result = NULL;
-            } else {
-                result = vector_from_array(items, count);
-                free(items);
-            }
-            break;
-        }
-        case TYPE_SYMBOL: {
-            Value *value = env_get(env, expr->data.string);
-            if (!value) {
-                set_error(error, "Undefined symbol %s", expr->data.string);
-                result = NULL;
-            } else {
-                result = value;
-            }
-            break;
-        }
-        case TYPE_LIST: {
-            if (is_nil(expr)) {
-                result = expr;
-                break;
-            }
-            Value *op = expr->data.list.car;
-            Value *args = expr->data.list.cdr;
-            if (op && op->type == TYPE_SYMBOL) {
-                const char *name = op->data.string;
-                if (strcmp(name, "quote") == 0) {
-                    result = eval_quote(args, error);
-                    break;
-                }
-                if (strcmp(name, "if") == 0) {
-                    result = eval_if(args, env, error);
-                    break;
-                }
-                if (strcmp(name, "def") == 0) {
-                    result = eval_def(args, env, error);
-                    break;
-                }
-                if (strcmp(name, "let") == 0) {
-                    result = eval_let(args, env, error);
-                    break;
-                }
-                if (strcmp(name, "fn") == 0) {
-                    result = eval_fn(args, env, error);
-                    break;
-                }
-                if (strcmp(name, "do") == 0) {
-                    result = eval_do(args, env, error);
-                    break;
-                }
-            }
-            Value *callable = eval(op, env, error);
-            if (!callable || (error && *error)) {
-                result = NULL;
-                break;
-            }
-            Value *evaluated_args = eval_args(args, env, error);
-            if (!evaluated_args || (error && *error)) {
-                result = NULL;
-                break;
-            }
-            result = apply_function_value(callable, evaluated_args, error);
-            break;
-        }
-        default:
-            set_error(error, "Unsupported expression");
-            result = NULL;
-            break;
-    }
-
-    current_eval_depth--;
-    return result;
-}
-
-static Value *eval_block(Value *forms, Env *env, char **error) {
-    Value *result = value_nil();
-    Value *iter = forms;
-    while (!is_nil(iter)) {
-        if (!is_list(iter)) {
-            set_error(error, "Malformed body");
-            return NULL;
-        }
-        Value *form = iter->data.list.car;
-        result = eval(form, env, error);
-        if (!result || (error && *error)) {
-            return NULL;
-        }
-        iter = iter->data.list.cdr;
-    }
-    return result;
-}
-
 static Value *eval_args(Value *list, Env *env, char **error) {
     Value *head = value_nil();
     Value *tail = NULL;
@@ -1216,46 +1014,295 @@ static Value *eval_args(Value *list, Env *env, char **error) {
     return head;
 }
 
-static Value *apply_function_value(Value *callable, Value *args, char **error) {
-    if (!callable) {
-        set_error(error, "Cannot call nil");
+/* Bind args to params in frame, supporting variadic & rest parameter.
+   Returns 1 on success, 0 on error (error string set via *error). */
+static int bind_params(Value *params, Value *args, Env *frame, char **error) {
+    Value *param_iter = params;
+    Value *arg_iter = args;
+    /* count required params for error messages */
+    size_t required = 0;
+    int has_rest = 0;
+    {
+        Value *pi = params;
+        while (!is_nil(pi)) {
+            Value *pn = pi->data.list.car;
+            if (pn->type == TYPE_SYMBOL && strcmp(pn->data.string, "&") == 0) {
+                has_rest = 1;
+                break;
+            }
+            required++;
+            pi = pi->data.list.cdr;
+        }
+    }
+    while (!is_nil(param_iter)) {
+        Value *pname = param_iter->data.list.car;
+        if (pname->type == TYPE_SYMBOL && strcmp(pname->data.string, "&") == 0) {
+            param_iter = param_iter->data.list.cdr;
+            if (is_nil(param_iter)) {
+                set_error(error, "& must be followed by a parameter name");
+                return 0;
+            }
+            Value *rest_name = param_iter->data.list.car;
+            env_define(frame, rest_name->data.string, arg_iter);
+            return 1;
+        }
+        if (is_nil(arg_iter)) {
+            size_t actual = list_length(args);
+            set_error(error, "Expected %s%zu argument%s, got %zu",
+                      has_rest ? "at least " : "", required,
+                      required == 1 ? "" : "s", actual);
+            return 0;
+        }
+        env_define(frame, pname->data.string, arg_iter->data.list.car);
+        param_iter = param_iter->data.list.cdr;
+        arg_iter = arg_iter->data.list.cdr;
+    }
+    if (!is_nil(arg_iter)) {
+        size_t actual = list_length(args);
+        set_error(error, "Too many arguments: expected %zu, got %zu", required, actual);
+        return 0;
+    }
+    return 1;
+}
+
+static Value *eval(Value *expr, Env *env, char **error) {
+    if (!expr) {
+        return value_nil();
+    }
+
+    current_eval_depth++;
+    if (current_eval_depth > MAX_EVAL_DEPTH) {
+        current_eval_depth--;
+        set_error(error, "Stack overflow: recursion depth exceeded");
         return NULL;
     }
-    if (callable->type == TYPE_NATIVE_FUNCTION) {
-        return callable->data.native(args, NULL, error);
+
+    Value *result = NULL;
+
+tco_loop:
+    result = NULL;
+
+    if (!expr) {
+        result = value_nil();
+        goto done;
     }
-    if (callable->type == TYPE_FUNCTION) {
-        Value *params = callable->data.function.params;
-        Env *closure = callable->data.function.env;
-        Env *frame = env_create(closure);
-        Value *param_iter = params;
-        Value *arg_iter = args;
-        size_t expected = list_length(params);
-        size_t actual = list_length(args);
-        while (!is_nil(param_iter)) {
-            if (is_nil(arg_iter)) {
-                set_error(error, "Expected %zu argument%s, got %zu",
-                          expected, expected == 1 ? "" : "s", actual);
-                return NULL;
+
+    switch (expr->type) {
+        case TYPE_NUMBER:
+        case TYPE_BOOL:
+        case TYPE_STRING:
+        case TYPE_FUNCTION:
+        case TYPE_NATIVE_FUNCTION:
+        case TYPE_NIL:
+            result = expr;
+            goto done;
+        case TYPE_VECTOR: {
+            if (is_nil(expr)) {
+                result = expr;
+                goto done;
             }
-            Value *param_name = param_iter->data.list.car;
-            if (!param_name || param_name->type != TYPE_SYMBOL) {
-                set_error(error, "Invalid parameter");
-                return NULL;
+            Value *viter = expr;
+            Value **items = NULL;
+            size_t count = 0;
+            size_t capacity = 0;
+            int had_error = 0;
+            while (!is_nil(viter)) {
+                if (!is_vector(viter)) {
+                    set_error(error, "Malformed vector");
+                    had_error = 1;
+                    break;
+                }
+                Value *element = viter->data.vector.car;
+                Value *evaluated = eval(element, env, error);
+                if (!evaluated || (error && *error)) {
+                    had_error = 1;
+                    break;
+                }
+                if (count == capacity) {
+                    capacity = capacity ? capacity * 2 : 4;
+                    items = checked_realloc(items, capacity * sizeof(Value *));
+                }
+                items[count++] = evaluated;
+                viter = viter->data.vector.cdr;
             }
-            Value *arg_value = arg_iter->data.list.car;
-            env_define(frame, param_name->data.string, arg_value);
-            param_iter = param_iter->data.list.cdr;
-            arg_iter = arg_iter->data.list.cdr;
+            if (had_error) {
+                free(items);
+            } else {
+                result = vector_from_array(items, count);
+                free(items);
+            }
+            goto done;
         }
-        if (!is_nil(arg_iter)) {
-            set_error(error, "Too many arguments: expected %zu, got %zu", expected, actual);
-            return NULL;
+        case TYPE_SYMBOL: {
+            Value *value = env_get(env, expr->data.string);
+            if (!value) {
+                set_error(error, "Undefined symbol %s", expr->data.string);
+            } else {
+                result = value;
+            }
+            goto done;
         }
-        return eval_block(callable->data.function.body, frame, error);
+        case TYPE_LIST: {
+            if (is_nil(expr)) {
+                result = expr;
+                goto done;
+            }
+            Value *op = expr->data.list.car;
+            Value *args = expr->data.list.cdr;
+            if (op && op->type == TYPE_SYMBOL) {
+                const char *sname = op->data.string;
+
+                if (strcmp(sname, "quote") == 0) {
+                    result = eval_quote(args, error);
+                    goto done;
+                }
+                if (strcmp(sname, "if") == 0) {
+                    if (!require_arg_range(args, 2, 3, error, "if")) goto done;
+                    Value *test_e = args->data.list.car;
+                    Value *then_e = args->data.list.cdr->data.list.car;
+                    Value *else_rest = args->data.list.cdr->data.list.cdr;
+                    Value *cond_val = eval(test_e, env, error);
+                    if (!cond_val || (error && *error)) goto done;
+                    if (is_truthy(cond_val)) {
+                        expr = then_e;
+                    } else if (!is_nil(else_rest)) {
+                        expr = else_rest->data.list.car;
+                    } else {
+                        result = value_nil();
+                        goto done;
+                    }
+                    goto tco_loop;
+                }
+                if (strcmp(sname, "def") == 0) {
+                    result = eval_def(args, env, error);
+                    goto done;
+                }
+                if (strcmp(sname, "let") == 0) {
+                    if (is_nil(args) || !is_list(args)) {
+                        set_error(error, "let expects binding list and body");
+                        goto done;
+                    }
+                    Value *binding_form = args->data.list.car;
+                    if (!(is_nil(binding_form) || is_list(binding_form) || is_vector(binding_form))) {
+                        set_error(error, "let bindings must be a list or vector");
+                        goto done;
+                    }
+                    Value *bindings = is_vector(binding_form) ? vector_to_list(binding_form) : binding_form;
+                    Env *child = env_create(env);
+                    Value *biter = bindings;
+                    int berr = 0;
+                    while (!is_nil(biter)) {
+                        if (!is_list(biter)) {
+                            set_error(error, "let bindings must be pairs");
+                            berr = 1; break;
+                        }
+                        Value *bname = biter->data.list.car;
+                        biter = biter->data.list.cdr;
+                        if (is_nil(biter)) {
+                            set_error(error, "let binding missing value");
+                            berr = 1; break;
+                        }
+                        Value *bexpr = biter->data.list.car;
+                        biter = biter->data.list.cdr;
+                        if (!bname || bname->type != TYPE_SYMBOL) {
+                            set_error(error, "let binding name must be symbol");
+                            berr = 1; break;
+                        }
+                        Value *bval = eval(bexpr, child, error);
+                        if (!bval || (error && *error)) { berr = 1; break; }
+                        env_define(child, bname->data.string, bval);
+                    }
+                    if (berr) goto done;
+                    Value *let_body = args->data.list.cdr;
+                    if (is_nil(let_body)) { result = value_nil(); goto done; }
+                    Value *let_iter = let_body;
+                    while (!is_nil(let_iter->data.list.cdr)) {
+                        Value *v = eval(let_iter->data.list.car, child, error);
+                        if (!v || (error && *error)) goto done;
+                        let_iter = let_iter->data.list.cdr;
+                    }
+                    expr = let_iter->data.list.car;
+                    env = child;
+                    goto tco_loop;
+                }
+                if (strcmp(sname, "fn") == 0) {
+                    result = eval_fn(args, env, error);
+                    goto done;
+                }
+                if (strcmp(sname, "do") == 0) {
+                    if (is_nil(args)) { result = value_nil(); goto done; }
+                    Value *do_iter = args;
+                    while (!is_nil(do_iter->data.list.cdr)) {
+                        Value *v = eval(do_iter->data.list.car, env, error);
+                        if (!v || (error && *error)) goto done;
+                        do_iter = do_iter->data.list.cdr;
+                    }
+                    expr = do_iter->data.list.car;
+                    goto tco_loop;
+                }
+                if (strcmp(sname, "and") == 0) {
+                    if (is_nil(args)) { result = value_true(); goto done; }
+                    Value *and_iter = args;
+                    while (!is_nil(and_iter->data.list.cdr)) {
+                        Value *v = eval(and_iter->data.list.car, env, error);
+                        if (!v || (error && *error)) goto done;
+                        if (!is_truthy(v)) { result = v; goto done; }
+                        and_iter = and_iter->data.list.cdr;
+                    }
+                    expr = and_iter->data.list.car;
+                    goto tco_loop;
+                }
+                if (strcmp(sname, "or") == 0) {
+                    if (is_nil(args)) { result = value_nil(); goto done; }
+                    Value *or_iter = args;
+                    while (!is_nil(or_iter->data.list.cdr)) {
+                        Value *v = eval(or_iter->data.list.car, env, error);
+                        if (!v || (error && *error)) goto done;
+                        if (is_truthy(v)) { result = v; goto done; }
+                        or_iter = or_iter->data.list.cdr;
+                    }
+                    expr = or_iter->data.list.car;
+                    goto tco_loop;
+                }
+            }
+            /* function call */
+            {
+                Value *callable = eval(op, env, error);
+                if (!callable || (error && *error)) goto done;
+                Value *eargs = eval_args(args, env, error);
+                if (!eargs || (error && *error)) goto done;
+                if (callable->type == TYPE_NATIVE_FUNCTION) {
+                    result = callable->data.native(eargs, NULL, error);
+                    goto done;
+                }
+                if (callable->type == TYPE_FUNCTION) {
+                    Env *frame = env_create(callable->data.function.env);
+                    if (!bind_params(callable->data.function.params, eargs, frame, error)) {
+                        goto done;
+                    }
+                    Value *fn_body = callable->data.function.body;
+                    if (is_nil(fn_body)) { result = value_nil(); goto done; }
+                    Value *fn_iter = fn_body;
+                    while (!is_nil(fn_iter->data.list.cdr)) {
+                        Value *v = eval(fn_iter->data.list.car, frame, error);
+                        if (!v || (error && *error)) goto done;
+                        fn_iter = fn_iter->data.list.cdr;
+                    }
+                    result = eval(fn_iter->data.list.car, frame, error);
+                    goto done;
+                }
+                set_error(error, "Value is not callable");
+                goto done;
+            }
+        }
+        default:
+            set_error(error, "Unsupported expression");
+            goto done;
     }
-    set_error(error, "Value is not callable");
-    return NULL;
+
+done:
+    current_eval_depth--;
+    return result;
 }
 
 static Value *builtin_add(Value *args, Env *env, char **error) {
@@ -2183,6 +2230,14 @@ static Value *builtin_is_fn(Value *args, Env *env, char **error) {
            ? value_true() : value_false();
 }
 
+static Value *builtin_not(Value *args, Env *env, char **error) {
+    (void)env;
+    if (!require_exact_args(args, 1, error, "not")) {
+        return NULL;
+    }
+    return is_truthy(args->data.list.car) ? value_false() : value_true();
+}
+
 static void register_builtin(Env *env, const char *name, NativeFn fn, const char *doc) {
     Value *value = make_native(fn, doc);
     env_define(env, name, value);
@@ -2227,6 +2282,7 @@ static void install_builtins(Env *env) {
     register_builtin(env, "list?", builtin_is_list, "list?");
     register_builtin(env, "vector?", builtin_is_vector, "vector?");
     register_builtin(env, "fn?", builtin_is_fn, "fn?");
+    register_builtin(env, "not", builtin_not, "not");
 }
 
 static void append_input(char **buffer, size_t *length, size_t *capacity, const char *line) {
