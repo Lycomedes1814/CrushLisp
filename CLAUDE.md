@@ -98,8 +98,10 @@ VALUE_FALSE  // false
 | `if` | `(if test then [else])` | else is optional → returns nil |
 | `def` | `(def name value)` | Binds in global env |
 | `let` | `(let [name val ...] body...)` | Local scope; `[]` or `()` accepted |
-| `fn` | `(fn [params...] body...)` | Closure; `[]` or `()` for params |
+| `fn` | `(fn [params...] body...)` | Closure; `[]` or `()` for params; variadic: `(fn [a & rest] ...)` |
 | `do` | `(do expr...)` | Sequential eval, returns last |
+| `and` | `(and expr...)` | Short-circuit; returns last truthy or first falsy |
+| `or` | `(or expr...)` | Short-circuit; returns first truthy or last falsy |
 
 ### Built-in Functions (40+)
 
@@ -113,6 +115,7 @@ Eval:           eval
 System:         sh  run
 Meta:           help
 Type predicates: nil?  number?  string?  bool?  symbol?  list?  vector?  fn?
+Logic:          not
 ```
 
 **`sh` vs `run`**:
@@ -135,7 +138,9 @@ No garbage collection. All `Value*` allocations are permanent (never freed). Thi
 
 ### Stack Overflow Protection
 
-Global counter `current_eval_depth`, max 1000. Incremented at entry to `eval`, decremented on all return paths. Error: `"Stack overflow: recursion depth exceeded"`. No tail-call optimization (TCO).
+Global counter `current_eval_depth`, max 1000. Incremented at entry to `eval`, decremented on all return paths. Error: `"Stack overflow: recursion depth exceeded"`.
+
+Special forms (`if`, `let`, `do`, `and`, `or`) use `goto tco_loop` inside `eval` to avoid recursing for their tail positions — this does not affect the depth counter. User-defined function calls do **not** use TCO; each call increments `current_eval_depth` normally, so infinite recursion is always caught.
 
 ### Environment Scoping
 
@@ -319,12 +324,12 @@ make clean && make 2>&1 | grep warning   # Check for new warnings
 ## Differences from Clojure/Standard Lisps
 
 - No macros, no `defmacro`
-- No tail-call optimization (TCO)
+- No tail-call optimization (TCO) for user functions (special forms use internal goto loop)
 - No continuations (`call/cc`)
 - All numbers are doubles (no integer type, no bignums)
 - No keywords (`:foo`); use symbols
 - No map literals `{}` (explicitly rejected by parser)
-- No destructuring in `let` or `fn` params
+- No destructuring in `let` or `fn` params; variadic `& rest` is supported in `fn`
 - `fn` accepts `[]` or `()` for parameter lists
 - `let` accepts `[]` or `()` for binding vector
 - Recursion limit: 1000 eval depth
@@ -343,4 +348,4 @@ make clean && make 2>&1 | grep warning   # Check for new warnings
 - List ops: O(n) traversal; `nth` is O(n)
 - Memory: unbounded growth (no GC)
 
-Optimization opportunities (not currently implemented): hash-table envs, TCO, GC.
+Optimization opportunities (not currently implemented): hash-table envs, full TCO for user functions, GC.
