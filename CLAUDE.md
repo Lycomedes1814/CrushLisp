@@ -8,7 +8,7 @@ CrushLisp is a Clojure-inspired Lisp interpreter written in C11. It features a R
 
 **Stack**: C11, POSIX, GNU Make  
 **Platform**: Linux/POSIX (POSIX functions: `isatty`, `getline`)  
-**Files**: `src/crushlisp.c` (interpreter), `src/functions.cl` (optional stdlib)
+**Files**: `src/crushlisp.c` (interpreter; includes embedded stdlib)
 
 ## Essential Commands
 
@@ -34,8 +34,7 @@ echo "(+ 1 2)" | ./crushlisp  # Pipe mode
 ```
 CrushLisp/
 ├── src/
-│   ├── crushlisp.c      # Complete interpreter (~2360 lines)
-│   └── functions.cl     # Optional stdlib: map, filter (NOT auto-loaded)
+│   └── crushlisp.c      # Complete interpreter (~2360 lines); includes embedded stdlib
 ├── examples/
 │   ├── eval_demo.lisp   # Demonstrates eval and dynamic code
 │   └── file_io.lisp     # Demonstrates slurp/spit/load
@@ -312,9 +311,9 @@ make clean && make 2>&1 | grep warning   # Check for new warnings
 - **`nil` and `false`** are the only falsy values
 - **Symbols**: looked up in lexical env chain
 
-### Standard Library (`src/functions.cl`)
+### Standard Library
 
-Embedded as `STDLIB_SOURCE` in `crushlisp.c` and evaluated automatically at startup before the REPL begins. `src/functions.cl` is kept as the canonical source; if you edit it, sync the embedded copy in `STDLIB_SOURCE`.
+Embedded as `STDLIB_SOURCE` (a C string constant near the top of `crushlisp.c`) and evaluated automatically at startup before the REPL begins. To add stdlib functions, edit `STDLIB_SOURCE` directly.
 
 ```lisp
 (def map    (fn [f coll] ...))   ; list transformation
