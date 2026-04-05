@@ -2,26 +2,26 @@
 
 ## Standard library
 
-- [ ] `reduce` — promote to builtin (currently implemented; verify edge cases)
-- [ ] `sort` / `sort-by`
-- [ ] `str/join` — join a collection into a string with a separator
-- [ ] `parse-number` — convert string to number
+- [x] `reduce` — builtin
+- [x] `sort` / `sort-by` — builtin (qsort-based, numbers and strings)
+- [x] `str/join` — builtin
+- [x] `parse-number` — builtin
 
 ## String functions
 
-- [ ] `upper-case` / `lower-case`
-- [ ] `trim`
-- [ ] `substring`
-- [ ] `starts-with?` / `ends-with?`
-- [ ] `replace`
-- [ ] `contains?` (string variant — already exists for maps)
-- [ ] `index-of`
-- [ ] `format` / sprintf-style string formatting
+- [x] `upper-case` / `lower-case`
+- [x] `trim`
+- [x] `substring`
+- [x] `starts-with?` / `ends-with?`
+- [x] `replace`
+- [x] `contains?` (string variant — extended existing `contains?`)
+- [x] `index-of` (string and list/vector)
+- [x] `format` / sprintf-style (`%s %d %f %g %%`)
 
 ## Language
 
-- [ ] `doseq` / `dotimes` — iteration over collections without manual recursion
-- [ ] `->` / `->>` threading macros (requires macros or built-in special forms)
+- [x] `doseq` / `dotimes` — special forms
+- [x] `->` / `->>` threading — special forms
 - [ ] Tail-call optimization (TCO) for user-defined functions — removes 1000-depth ceiling for recursive code
 - [ ] Macros (`defmacro`) — user-defined control flow and syntactic sugar
 - [ ] Integer type — doubles work to 2^53 but `mod` and bitwise ops feel wrong on floats

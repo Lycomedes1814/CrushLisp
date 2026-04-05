@@ -8,7 +8,7 @@ CrushLisp is a Clojure-inspired Lisp interpreter written in C11. It features a R
 
 **Stack**: C11, POSIX, GNU Make  
 **Platform**: Linux/POSIX (POSIX functions: `isatty`, `getline`)  
-**Files**: `src/crushlisp.c` (interpreter; includes embedded stdlib)
+**Files**: `src/crushlisp.c` (interpreter; includes embedded stdlib; ~3473 lines)
 
 ## Essential Commands
 
@@ -27,7 +27,7 @@ echo "(+ 1 2)" | ./crushlisp  # Pipe mode
 ./crushlisp < script.lisp     # File redirect
 ```
 
-**After any code change**: always run `make && make test` to verify zero warnings and all tests pass.
+**After any code change**: always run `make && make test` to verify zero warnings and all tests pass (currently 68 tests).
 
 ## Repository Structure
 
@@ -85,9 +85,9 @@ VALUE_FALSE  // false
 | Printer | ~340–520 | `value_to_string(value, readable)` |
 | Parser | ~660–871 | `parse_expr` — returns `ParseStatus` |
 | Evaluator | ~873–1192 | `eval`, special forms |
-| Built-ins | ~1194–2200 | 40+ native functions |
-| REPL | ~2200–2330 | `repl()` — multi-line, continuation prompts |
-| Main | ~2336–2360 | Flag parsing, env init |
+| Built-ins | ~1200–3350 | 55+ native functions |
+| REPL | ~3350–3420 | `repl()` — multi-line, continuation prompts |
+| Main | ~3421–3473 | Flag parsing, env init |
 
 ### Special Forms (evaluated without evaluating args first)
 
@@ -106,17 +106,23 @@ VALUE_FALSE  // false
 | `recur` | `(recur args...)` | Restarts enclosing `loop` with new values; no stack growth |
 | `try` | `(try body (catch e handler...))` | Catches errors; `e` is bound to the message string |
 | `throw` | `(throw message)` | Signals an error |
+| `->` | `(-> x (f a) (g b))` | Thread-first: inserts value as first arg of each step |
+| `->>` | `(->> x (f a) (g b))` | Thread-last: inserts value as last arg of each step |
+| `doseq` | `(doseq [x coll] body...)` | Iterate over collection for side effects; returns nil |
+| `dotimes` | `(dotimes [i n] body...)` | Iterate `i` from 0 to n-1; returns nil |
 
-### Built-in Functions (40+)
+### Built-in Functions (55+)
 
 ```
 Arithmetic:     +  -  *  /  mod  inc  dec
 Comparison:     =  <  <=  >  >=
 Logic:          not  and  or
 Higher-order:   apply  reduce  map  filter  (map/filter from stdlib)
-Collections:    list  first  rest  cons  conj  count  nth
+Collections:    list  first  rest  cons  conj  count  nth  sort  sort-by
 Maps:           hash-map  get  assoc  dissoc  keys  vals  contains?
-Strings:        str  split
+Strings:        str  str/join  split  upper-case  lower-case  trim
+                substring  starts-with?  ends-with?  replace  index-of
+                parse-number  format
 I/O:            print  println  slurp  spit  load
 Eval:           eval
 System:         sh  run
@@ -227,7 +233,7 @@ For stderr (errors, stack overflow, etc.):
 
 ### Current Test Coverage
 
-Arithmetic, variables, conditionals, lists, vectors, vector evaluation, vector collection ops, functions with vector params, silent mode, stack overflow, eval, arity validation, shell exit status, file I/O (slurp/spit roundtrip), load, let with vector syntax, conj on vectors, cons on vectors, and all 8 type predicates.
+68 tests covering: arithmetic, variables, conditionals, lists, vectors, vector evaluation, vector collection ops, functions with vector params, silent mode, stack overflow, eval, arity validation, shell exit status, file I/O (slurp/spit roundtrip), load, let with vector syntax, conj/cons on vectors, all 8 type predicates, apply, reduce, loop/recur, try/throw, when, hash maps, stdlib map/filter, string functions (upper-case, lower-case, trim, substring, starts-with?, ends-with?, replace, index-of, str/join, format, parse-number), sort, sort-by, contains? on strings, threading macros (-> and ->>), doseq, dotimes.
 
 ## Common Development Tasks
 
@@ -329,7 +335,7 @@ Embedded as `STDLIB_SOURCE` (a C string constant near the top of `crushlisp.c`) 
 
 ## Differences from Clojure/Standard Lisps
 
-- No macros, no `defmacro`
+- No macros, no `defmacro`; `->` and `->>` are built-in special forms
 - No tail-call optimization (TCO) for user functions; use `loop`/`recur` for iteration
 - No continuations (`call/cc`)
 - All numbers are doubles (no integer type, no bignums)
@@ -338,6 +344,8 @@ Embedded as `STDLIB_SOURCE` (a C string constant near the top of `crushlisp.c`) 
 - No destructuring in `let` or `fn` params; variadic `& rest` is supported in `fn`
 - `fn` accepts `[]` or `()` for parameter lists
 - `let` accepts `[]` or `()` for binding vector
+- `contains?` works on both maps and strings (substring check)
+- `format` supports `%s %d %f %g %%` only (no width/precision specifiers)
 - Recursion limit: 1000 eval depth
 
 ## Git Conventions

@@ -78,6 +78,26 @@ test: $(TARGET)
 	@echo "(contains? (hash-map \"x\" 1) \"y\")" | ./$(TARGET) | grep -qx "false" && echo "✓ contains? absent test passed"
 	@echo "(map (fn [x] (* x x)) (list 1 2 3))" | ./$(TARGET) | grep -qx "(1 4 9)" && echo "✓ stdlib map test passed"
 	@echo "(filter (fn [x] (> x 2)) (list 1 2 3 4 5))" | ./$(TARGET) | grep -qx "(3 4 5)" && echo "✓ stdlib filter test passed"
+	@echo "(upper-case \"hello\")" | ./$(TARGET) | grep -qx '"HELLO"' && echo "✓ upper-case test passed" || (echo "✗ upper-case test failed" && exit 1)
+	@echo "(lower-case \"WORLD\")" | ./$(TARGET) | grep -qx '"world"' && echo "✓ lower-case test passed" || (echo "✗ lower-case test failed" && exit 1)
+	@echo "(trim \"  hi  \")" | ./$(TARGET) | grep -qx '"hi"' && echo "✓ trim test passed" || (echo "✗ trim test failed" && exit 1)
+	@echo "(substring \"hello\" 1 3)" | ./$(TARGET) | grep -qx '"el"' && echo "✓ substring test passed" || (echo "✗ substring test failed" && exit 1)
+	@echo "(starts-with? \"foobar\" \"foo\")" | ./$(TARGET) | grep -qx "true" && echo "✓ starts-with? test passed" || (echo "✗ starts-with? test failed" && exit 1)
+	@echo "(ends-with? \"foobar\" \"bar\")" | ./$(TARGET) | grep -qx "true" && echo "✓ ends-with? test passed" || (echo "✗ ends-with? test failed" && exit 1)
+	@echo "(replace \"hello world\" \"world\" \"lisp\")" | ./$(TARGET) | grep -qx '"hello lisp"' && echo "✓ replace test passed" || (echo "✗ replace test failed" && exit 1)
+	@echo "(index-of \"hello\" \"ll\")" | ./$(TARGET) | grep -qx "2" && echo "✓ index-of string test passed" || (echo "✗ index-of string test failed" && exit 1)
+	@echo "(index-of (list 1 2 3) 2)" | ./$(TARGET) | grep -qx "1" && echo "✓ index-of list test passed" || (echo "✗ index-of list test failed" && exit 1)
+	@echo "(str/join \", \" (list \"a\" \"b\" \"c\"))" | ./$(TARGET) | grep -qx '"a, b, c"' && echo "✓ str/join test passed" || (echo "✗ str/join test failed" && exit 1)
+	@echo "(format \"%s has %d items\" \"Alice\" 3)" | ./$(TARGET) | grep -qx '"Alice has 3 items"' && echo "✓ format test passed" || (echo "✗ format test failed" && exit 1)
+	@echo "(parse-number \"42.5\")" | ./$(TARGET) | grep -qx "42.5" && echo "✓ parse-number test passed" || (echo "✗ parse-number test failed" && exit 1)
+	@echo "(parse-number \"bad\")" | ./$(TARGET) | grep -qx "nil" && echo "✓ parse-number nil test passed" || (echo "✗ parse-number nil test failed" && exit 1)
+	@echo "(sort (list 3 1 2))" | ./$(TARGET) | grep -qx "(1 2 3)" && echo "✓ sort test passed" || (echo "✗ sort test failed" && exit 1)
+	@echo "(sort-by count (list \"banana\" \"apple\" \"fig\"))" | ./$(TARGET) | grep -qx '("fig" "apple" "banana")' && echo "✓ sort-by test passed" || (echo "✗ sort-by test failed" && exit 1)
+	@echo "(contains? \"foobar\" \"foo\")" | ./$(TARGET) | grep -qx "true" && echo "✓ contains? string test passed" || (echo "✗ contains? string test failed" && exit 1)
+	@echo "(-> 1 inc inc)" | ./$(TARGET) | grep -qx "3" && echo "✓ -> thread-first test passed" || (echo "✗ -> thread-first test failed" && exit 1)
+	@echo "(->> (list 1 2 3) (map inc) (filter (fn [x] (> x 2))))" | ./$(TARGET) | grep -qx "(3 4)" && echo "✓ ->> thread-last test passed" || (echo "✗ ->> thread-last test failed" && exit 1)
+	@echo "(do (doseq [x (list 1 2 3)] (print x)) nil)" | ./$(TARGET) | grep -q "123" && echo "✓ doseq test passed" || (echo "✗ doseq test failed" && exit 1)
+	@echo "(do (dotimes [i 3] (print i)) nil)" | ./$(TARGET) | grep -q "012" && echo "✓ dotimes test passed" || (echo "✗ dotimes test failed" && exit 1)
 	@echo "All tests passed!"
 
 install: $(TARGET)

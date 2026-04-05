@@ -106,7 +106,11 @@ static const char *HELP_TEXT =
 "  (loop [name val ...] body...) iteration; use recur to jump back\n"
 "  (recur args...)        jump to enclosing loop with new values\n"
 "  (try body (catch e handler...)) catch errors thrown by throw\n"
-"  (throw message)        signal an error\n\n"
+"  (throw message)        signal an error\n"
+"  (-> x (f a) (g b))    thread-first: (g (f x a) b)\n"
+"  (->> x (f a) (g b))   thread-last:  (g b (f a x))\n"
+"  (doseq [x coll] body...) iterate over collection for side effects\n"
+"  (dotimes [i n] body...) iterate i from 0 to n-1\n\n"
 "Data structures:\n"
 "  (list values...)       list\n"
 "  [values...]            vector\n"
@@ -130,9 +134,22 @@ static const char *HELP_TEXT =
 "  (dissoc map k ...)     remove map entries\n"
 "  (keys map)             list of keys\n"
 "  (vals map)             list of values\n"
-"  (contains? map key)    true if map has key\n"
+"  (contains? map key)    true if map has key (or string contains substring)\n"
 "  (str values...)        concatenate as strings\n"
+"  (str/join sep coll)    join collection into string with separator\n"
 "  (split s delim)        split string on one-character delimiter\n"
+"  (upper-case s)         convert string to uppercase\n"
+"  (lower-case s)         convert string to lowercase\n"
+"  (trim s)               strip leading/trailing whitespace\n"
+"  (substring s start [end]) extract substring\n"
+"  (starts-with? s prefix) true if string starts with prefix\n"
+"  (ends-with? s suffix)  true if string ends with suffix\n"
+"  (replace s from to)    replace all occurrences of from with to\n"
+"  (index-of coll item)   index of item in string/list/vector, or -1\n"
+"  (parse-number s)       convert string to number, nil on failure\n"
+"  (format fmt args...)   sprintf-style: %%s %%d %%f %%g %%%%\n"
+"  (sort coll)            sort list of numbers or strings\n"
+"  (sort-by f coll)       sort by key function\n"
 "  (print values...)      write without newline\n"
 "  (println values...)    write with newline\n"
 "  (eval expr)            evaluate expression or string\n"
@@ -451,6 +468,12 @@ static Value *list_from_array(Value **items, size_t count) {
         result = cons(items[idx], result);
     }
     return result;
+}
+
+static Value *list_append(Value *lst, Value *tail) {
+    if (is_nil(lst)) return tail;
+    if (!is_list(lst)) return tail;
+    return cons(lst->data.list.car, list_append(lst->data.list.cdr, tail));
 }
 
 static Value *vector_from_array(Value **items, size_t count) {
@@ -1553,6 +1576,143 @@ tco_loop:
                     free(bind_names);
                     goto done;
                 }
+                /* -> (thread-first): (-> x (f a) (g b)) => (g (f x a) b) */
+                if (strcmp(sname, "->") == 0) {
+                    if (is_nil(args)) { result = value_nil(); goto done; }
+                    Value *val = eval(args->data.list.car, env, error);
+                    if (!val || (error && *error)) goto done;
+                    Value *forms = args->data.list.cdr;
+                    while (!is_nil(forms)) {
+                        Value *form = forms->data.list.car;
+                        Value *qval = cons(make_symbol("quote"), cons(val, value_nil()));
+                        Value *new_expr;
+                        if (form->type == TYPE_SYMBOL) {
+                            new_expr = cons(form, cons(qval, value_nil()));
+                        } else if (is_list(form) && !is_nil(form)) {
+                            new_expr = cons(form->data.list.car, cons(qval, form->data.list.cdr));
+                        } else {
+                            set_error(error, "->: each step must be a symbol or list");
+                            goto done;
+                        }
+                        val = eval(new_expr, env, error);
+                        if (!val || (error && *error)) goto done;
+                        forms = forms->data.list.cdr;
+                    }
+                    result = val;
+                    goto done;
+                }
+                /* ->> (thread-last): (->> x (f a) (g b)) => (g b (f a x)) */
+                if (strcmp(sname, "->>") == 0) {
+                    if (is_nil(args)) { result = value_nil(); goto done; }
+                    Value *val = eval(args->data.list.car, env, error);
+                    if (!val || (error && *error)) goto done;
+                    Value *forms = args->data.list.cdr;
+                    while (!is_nil(forms)) {
+                        Value *form = forms->data.list.car;
+                        Value *qval = cons(make_symbol("quote"), cons(val, value_nil()));
+                        Value *new_expr;
+                        if (form->type == TYPE_SYMBOL) {
+                            new_expr = cons(form, cons(qval, value_nil()));
+                        } else if (is_list(form) && !is_nil(form)) {
+                            new_expr = cons(form->data.list.car,
+                                           list_append(form->data.list.cdr, cons(qval, value_nil())));
+                        } else {
+                            set_error(error, "->>: each step must be a symbol or list");
+                            goto done;
+                        }
+                        val = eval(new_expr, env, error);
+                        if (!val || (error && *error)) goto done;
+                        forms = forms->data.list.cdr;
+                    }
+                    result = val;
+                    goto done;
+                }
+                /* doseq: (doseq [var coll] body...) — iterate over collection for side effects */
+                if (strcmp(sname, "doseq") == 0) {
+                    if (is_nil(args) || is_nil(args->data.list.cdr)) {
+                        set_error(error, "doseq expects a binding vector and body");
+                        goto done;
+                    }
+                    Value *binding_form = args->data.list.car;
+                    Value *doseq_body = args->data.list.cdr;
+                    Value *bindings = NULL;
+                    if (is_vector(binding_form)) bindings = vector_to_list(binding_form);
+                    else if (is_list(binding_form)) bindings = binding_form;
+                    if (!bindings || is_nil(bindings) || is_nil(bindings->data.list.cdr)) {
+                        set_error(error, "doseq binding requires [var coll]");
+                        goto done;
+                    }
+                    Value *bind_sym = bindings->data.list.car;
+                    if (bind_sym->type != TYPE_SYMBOL) {
+                        set_error(error, "doseq binding variable must be a symbol");
+                        goto done;
+                    }
+                    Value *coll_expr = bindings->data.list.cdr->data.list.car;
+                    Value *doseq_coll = eval(coll_expr, env, error);
+                    if (!doseq_coll || (error && *error)) goto done;
+                    Value *diter = doseq_coll;
+                    int doseq_err = 0;
+                    while (!is_nil(diter)) {
+                        Value *item;
+                        if (is_vector(diter)) { item = diter->data.vector.car; diter = diter->data.vector.cdr; }
+                        else if (is_list(diter)) { item = diter->data.list.car; diter = diter->data.list.cdr; }
+                        else break;
+                        Env *doseq_frame = env_create(env);
+                        env_define(doseq_frame, bind_sym->data.string, item);
+                        Value *biter = doseq_body;
+                        while (!is_nil(biter)) {
+                            Value *v = eval(biter->data.list.car, doseq_frame, error);
+                            if (!v || (error && *error)) { doseq_err = 1; break; }
+                            biter = biter->data.list.cdr;
+                        }
+                        if (doseq_err) goto done;
+                    }
+                    result = value_nil();
+                    goto done;
+                }
+                /* dotimes: (dotimes [i n] body...) — iterate i from 0 to n-1 */
+                if (strcmp(sname, "dotimes") == 0) {
+                    if (is_nil(args) || is_nil(args->data.list.cdr)) {
+                        set_error(error, "dotimes expects a binding vector and body");
+                        goto done;
+                    }
+                    Value *binding_form = args->data.list.car;
+                    Value *dt_body = args->data.list.cdr;
+                    Value *bindings = NULL;
+                    if (is_vector(binding_form)) bindings = vector_to_list(binding_form);
+                    else if (is_list(binding_form)) bindings = binding_form;
+                    if (!bindings || is_nil(bindings) || is_nil(bindings->data.list.cdr)) {
+                        set_error(error, "dotimes binding requires [i n]");
+                        goto done;
+                    }
+                    Value *bind_sym = bindings->data.list.car;
+                    if (bind_sym->type != TYPE_SYMBOL) {
+                        set_error(error, "dotimes binding variable must be a symbol");
+                        goto done;
+                    }
+                    Value *n_expr = bindings->data.list.cdr->data.list.car;
+                    Value *n_val = eval(n_expr, env, error);
+                    if (!n_val || (error && *error)) goto done;
+                    if (n_val->type != TYPE_NUMBER) {
+                        set_error(error, "dotimes: count must be a number");
+                        goto done;
+                    }
+                    long dt_n = (long)n_val->data.number;
+                    int dt_err = 0;
+                    for (long dt_i = 0; dt_i < dt_n; dt_i++) {
+                        Env *dt_frame = env_create(env);
+                        env_define(dt_frame, bind_sym->data.string, make_number((double)dt_i));
+                        Value *biter = dt_body;
+                        while (!is_nil(biter)) {
+                            Value *v = eval(biter->data.list.car, dt_frame, error);
+                            if (!v || (error && *error)) { dt_err = 1; break; }
+                            biter = biter->data.list.cdr;
+                        }
+                        if (dt_err) goto done;
+                    }
+                    result = value_nil();
+                    goto done;
+                }
             }
             /* function call */
             {
@@ -2651,8 +2811,16 @@ static Value *builtin_contains(Value *args, Env *env, char **error) {
     if (!require_exact_args(args, 2, error, "contains?")) return NULL;
     Value *m = args->data.list.car;
     Value *key = args->data.list.cdr->data.list.car;
-    if (!is_map(m)) { set_error(error, "contains?: expected a map"); return NULL; }
-    return map_get(m, key) ? value_true() : value_false();
+    if (is_map(m)) return map_get(m, key) ? value_true() : value_false();
+    if (m->type == TYPE_STRING) {
+        if (key->type != TYPE_STRING) {
+            set_error(error, "contains?: substring must be a string");
+            return NULL;
+        }
+        return strstr(m->data.string, key->data.string) ? value_true() : value_false();
+    }
+    set_error(error, "contains?: expected a map or string");
+    return NULL;
 }
 
 /* reduce: (reduce f init coll) */
@@ -2741,6 +2909,341 @@ static Value *builtin_apply(Value *args, Env *env, char **error) {
     return eval(iter->data.list.car, frame, error);
 }
 
+/* parse-number: (parse-number s) — convert string to number, nil on failure */
+static Value *builtin_parse_number(Value *args, Env *env, char **error) {
+    (void)env;
+    if (!require_exact_args(args, 1, error, "parse-number")) return NULL;
+    Value *s = args->data.list.car;
+    if (s->type != TYPE_STRING) {
+        set_error(error, "parse-number: expected a string");
+        return NULL;
+    }
+    char *endptr;
+    double n = strtod(s->data.string, &endptr);
+    if (endptr == s->data.string || *endptr != '\0') return value_nil();
+    return make_number(n);
+}
+
+/* upper-case: (upper-case s) */
+static Value *builtin_upper_case(Value *args, Env *env, char **error) {
+    (void)env;
+    if (!require_exact_args(args, 1, error, "upper-case")) return NULL;
+    Value *s = args->data.list.car;
+    if (s->type != TYPE_STRING) { set_error(error, "upper-case: expected a string"); return NULL; }
+    size_t len = strlen(s->data.string);
+    char *result = checked_malloc(len + 1);
+    for (size_t i = 0; i <= len; i++)
+        result[i] = (char)toupper((unsigned char)s->data.string[i]);
+    return make_string_owned(result);
+}
+
+/* lower-case: (lower-case s) */
+static Value *builtin_lower_case(Value *args, Env *env, char **error) {
+    (void)env;
+    if (!require_exact_args(args, 1, error, "lower-case")) return NULL;
+    Value *s = args->data.list.car;
+    if (s->type != TYPE_STRING) { set_error(error, "lower-case: expected a string"); return NULL; }
+    size_t len = strlen(s->data.string);
+    char *result = checked_malloc(len + 1);
+    for (size_t i = 0; i <= len; i++)
+        result[i] = (char)tolower((unsigned char)s->data.string[i]);
+    return make_string_owned(result);
+}
+
+/* trim: (trim s) — strip leading and trailing whitespace */
+static Value *builtin_trim(Value *args, Env *env, char **error) {
+    (void)env;
+    if (!require_exact_args(args, 1, error, "trim")) return NULL;
+    Value *s = args->data.list.car;
+    if (s->type != TYPE_STRING) { set_error(error, "trim: expected a string"); return NULL; }
+    const char *start = s->data.string;
+    while (*start && isspace((unsigned char)*start)) start++;
+    const char *end = start + strlen(start);
+    while (end > start && isspace((unsigned char)*(end - 1))) end--;
+    size_t len = (size_t)(end - start);
+    char *result = checked_malloc(len + 1);
+    memcpy(result, start, len);
+    result[len] = '\0';
+    return make_string_owned(result);
+}
+
+/* substring: (substring s start [end]) */
+static Value *builtin_substring(Value *args, Env *env, char **error) {
+    (void)env;
+    if (!require_arg_range(args, 2, 3, error, "substring")) return NULL;
+    Value *s = args->data.list.car;
+    if (s->type != TYPE_STRING) { set_error(error, "substring: expected a string"); return NULL; }
+    Value *start_val = args->data.list.cdr->data.list.car;
+    if (start_val->type != TYPE_NUMBER) { set_error(error, "substring: start must be a number"); return NULL; }
+    size_t slen = strlen(s->data.string);
+    size_t start = (size_t)start_val->data.number;
+    size_t end = slen;
+    if (!is_nil(args->data.list.cdr->data.list.cdr)) {
+        Value *end_val = args->data.list.cdr->data.list.cdr->data.list.car;
+        if (end_val->type != TYPE_NUMBER) { set_error(error, "substring: end must be a number"); return NULL; }
+        end = (size_t)end_val->data.number;
+    }
+    if (start > slen) start = slen;
+    if (end > slen) end = slen;
+    if (end < start) end = start;
+    size_t len = end - start;
+    char *result = checked_malloc(len + 1);
+    memcpy(result, s->data.string + start, len);
+    result[len] = '\0';
+    return make_string_owned(result);
+}
+
+/* starts-with?: (starts-with? s prefix) */
+static Value *builtin_starts_with(Value *args, Env *env, char **error) {
+    (void)env;
+    if (!require_exact_args(args, 2, error, "starts-with?")) return NULL;
+    Value *s = args->data.list.car;
+    Value *prefix = args->data.list.cdr->data.list.car;
+    if (s->type != TYPE_STRING || prefix->type != TYPE_STRING) {
+        set_error(error, "starts-with?: expected strings"); return NULL;
+    }
+    return strncmp(s->data.string, prefix->data.string, strlen(prefix->data.string)) == 0
+           ? value_true() : value_false();
+}
+
+/* ends-with?: (ends-with? s suffix) */
+static Value *builtin_ends_with(Value *args, Env *env, char **error) {
+    (void)env;
+    if (!require_exact_args(args, 2, error, "ends-with?")) return NULL;
+    Value *s = args->data.list.car;
+    Value *suffix = args->data.list.cdr->data.list.car;
+    if (s->type != TYPE_STRING || suffix->type != TYPE_STRING) {
+        set_error(error, "ends-with?: expected strings"); return NULL;
+    }
+    size_t slen = strlen(s->data.string);
+    size_t suflen = strlen(suffix->data.string);
+    if (suflen > slen) return value_false();
+    return strcmp(s->data.string + slen - suflen, suffix->data.string) == 0
+           ? value_true() : value_false();
+}
+
+/* replace: (replace s from to) — replace all occurrences of from with to */
+static Value *builtin_replace(Value *args, Env *env, char **error) {
+    (void)env;
+    if (!require_exact_args(args, 3, error, "replace")) return NULL;
+    Value *s = args->data.list.car;
+    Value *from = args->data.list.cdr->data.list.car;
+    Value *to = args->data.list.cdr->data.list.cdr->data.list.car;
+    if (s->type != TYPE_STRING || from->type != TYPE_STRING || to->type != TYPE_STRING) {
+        set_error(error, "replace: expected strings"); return NULL;
+    }
+    const char *src = s->data.string;
+    const char *pat = from->data.string;
+    const char *rep = to->data.string;
+    size_t patlen = strlen(pat);
+    if (patlen == 0) return s;
+    StringBuilder sb;
+    sb_init(&sb);
+    const char *p = src;
+    while (*p) {
+        if (strncmp(p, pat, patlen) == 0) {
+            sb_append(&sb, rep);
+            p += patlen;
+        } else {
+            sb_append_char(&sb, *p++);
+        }
+    }
+    return make_string_owned(sb_take(&sb));
+}
+
+/* index-of: (index-of coll item)
+   For strings: returns index of first occurrence of substring, or -1.
+   For lists/vectors: returns index of first equal element, or -1. */
+static Value *builtin_index_of(Value *args, Env *env, char **error) {
+    (void)env;
+    if (!require_exact_args(args, 2, error, "index-of")) return NULL;
+    Value *coll = args->data.list.car;
+    Value *item = args->data.list.cdr->data.list.car;
+    if (coll->type == TYPE_STRING) {
+        if (item->type != TYPE_STRING) {
+            set_error(error, "index-of: substring must be a string"); return NULL;
+        }
+        const char *found = strstr(coll->data.string, item->data.string);
+        return make_number(found ? (double)(found - coll->data.string) : -1.0);
+    }
+    size_t idx = 0;
+    Value *iter = coll;
+    while (!is_nil(iter)) {
+        Value *el;
+        if (is_vector(iter)) { el = iter->data.vector.car; iter = iter->data.vector.cdr; }
+        else if (is_list(iter)) { el = iter->data.list.car; iter = iter->data.list.cdr; }
+        else break;
+        if (value_equals(el, item)) return make_number((double)idx);
+        idx++;
+    }
+    return make_number(-1.0);
+}
+
+/* str/join: (str/join sep coll) — join collection into string with separator */
+static Value *builtin_str_join(Value *args, Env *env, char **error) {
+    (void)env;
+    if (!require_exact_args(args, 2, error, "str/join")) return NULL;
+    Value *sep_val = args->data.list.car;
+    Value *coll = args->data.list.cdr->data.list.car;
+    if (sep_val->type != TYPE_STRING) {
+        set_error(error, "str/join: separator must be a string"); return NULL;
+    }
+    const char *sep = sep_val->data.string;
+    StringBuilder sb;
+    sb_init(&sb);
+    int first = 1;
+    Value *iter = coll;
+    while (!is_nil(iter)) {
+        Value *item;
+        if (is_vector(iter)) { item = iter->data.vector.car; iter = iter->data.vector.cdr; }
+        else if (is_list(iter)) { item = iter->data.list.car; iter = iter->data.list.cdr; }
+        else break;
+        if (!first) sb_append(&sb, sep);
+        char *s = value_to_string(item, 0);
+        sb_append(&sb, s);
+        free(s);
+        first = 0;
+    }
+    return make_string_owned(sb_take(&sb));
+}
+
+/* format: (format fmt args...) — sprintf-style, supports %s %d %f %g %% */
+static Value *builtin_format(Value *args, Env *env, char **error) {
+    (void)env;
+    if (is_nil(args)) { set_error(error, "format: requires a format string"); return NULL; }
+    Value *fmt_val = args->data.list.car;
+    if (fmt_val->type != TYPE_STRING) {
+        set_error(error, "format: first argument must be a format string"); return NULL;
+    }
+    const char *fmt = fmt_val->data.string;
+    Value *arg_iter = args->data.list.cdr;
+    StringBuilder sb;
+    sb_init(&sb);
+    const char *p = fmt;
+    while (*p) {
+        if (*p != '%') { sb_append_char(&sb, *p++); continue; }
+        p++;
+        if (*p == '%') { sb_append_char(&sb, '%'); p++; continue; }
+        if (is_nil(arg_iter)) {
+            free(sb.data);
+            set_error(error, "format: not enough arguments"); return NULL;
+        }
+        Value *arg = arg_iter->data.list.car;
+        arg_iter = arg_iter->data.list.cdr;
+        if (*p == 's') {
+            char *s = value_to_string(arg, 0);
+            sb_append(&sb, s); free(s);
+        } else if (*p == 'd') {
+            if (arg->type != TYPE_NUMBER) { free(sb.data); set_error(error, "format: %%d requires a number"); return NULL; }
+            char buf[64]; snprintf(buf, sizeof(buf), "%ld", (long)arg->data.number);
+            sb_append(&sb, buf);
+        } else if (*p == 'f') {
+            if (arg->type != TYPE_NUMBER) { free(sb.data); set_error(error, "format: %%f requires a number"); return NULL; }
+            char buf[64]; snprintf(buf, sizeof(buf), "%f", arg->data.number);
+            sb_append(&sb, buf);
+        } else if (*p == 'g') {
+            if (arg->type != TYPE_NUMBER) { free(sb.data); set_error(error, "format: %%g requires a number"); return NULL; }
+            char buf[64]; snprintf(buf, sizeof(buf), "%g", arg->data.number);
+            sb_append(&sb, buf);
+        } else {
+            sb_append_char(&sb, '%');
+            /* don't advance p — reprocess next char */
+            continue;
+        }
+        p++;
+    }
+    return make_string_owned(sb_take(&sb));
+}
+
+/* sort: (sort coll) — returns sorted list (numbers or strings) */
+static int sort_cmp_values(const void *a, const void *b) {
+    Value *va = *(Value *const *)a;
+    Value *vb = *(Value *const *)b;
+    if (va->type == TYPE_NUMBER && vb->type == TYPE_NUMBER) {
+        double diff = va->data.number - vb->data.number;
+        return (diff > 0.0) - (diff < 0.0);
+    }
+    if (va->type == TYPE_STRING && vb->type == TYPE_STRING)
+        return strcmp(va->data.string, vb->data.string);
+    return (int)va->type - (int)vb->type;
+}
+
+static Value *builtin_sort(Value *args, Env *env, char **error) {
+    (void)env;
+    if (!require_exact_args(args, 1, error, "sort")) return NULL;
+    Value *coll = args->data.list.car;
+    Value **items = NULL;
+    size_t count = 0, cap = 0;
+    Value *iter = coll;
+    while (!is_nil(iter)) {
+        Value *item;
+        if (is_vector(iter)) { item = iter->data.vector.car; iter = iter->data.vector.cdr; }
+        else if (is_list(iter)) { item = iter->data.list.car; iter = iter->data.list.cdr; }
+        else break;
+        if (count == cap) { cap = cap ? cap * 2 : 8; items = checked_realloc(items, cap * sizeof(Value *)); }
+        items[count++] = item;
+    }
+    if (count > 0) qsort(items, count, sizeof(Value *), sort_cmp_values);
+    Value *result = list_from_array(items, count);
+    free(items);
+    return result;
+}
+
+/* sort-by: (sort-by key-fn coll) — sort by result of applying key-fn to each element */
+typedef struct { Value *key; Value *val; } SortByPair;
+static int sort_by_pair_cmp(const void *a, const void *b) {
+    const SortByPair *pa = (const SortByPair *)a;
+    const SortByPair *pb = (const SortByPair *)b;
+    return sort_cmp_values(&pa->key, &pb->key);
+}
+
+static Value *builtin_sort_by(Value *args, Env *env, char **error) {
+    (void)env;
+    if (!require_exact_args(args, 2, error, "sort-by")) return NULL;
+    Value *keyfn = args->data.list.car;
+    Value *coll = args->data.list.cdr->data.list.car;
+    if (keyfn->type != TYPE_FUNCTION && keyfn->type != TYPE_NATIVE_FUNCTION) {
+        set_error(error, "sort-by: first argument must be a function"); return NULL;
+    }
+    SortByPair *pairs = NULL;
+    size_t count = 0, cap = 0;
+    Value *iter = coll;
+    while (!is_nil(iter)) {
+        Value *item;
+        if (is_vector(iter)) { item = iter->data.vector.car; iter = iter->data.vector.cdr; }
+        else if (is_list(iter)) { item = iter->data.list.car; iter = iter->data.list.cdr; }
+        else break;
+        Value *key_args = cons(item, value_nil());
+        Value *key;
+        if (keyfn->type == TYPE_NATIVE_FUNCTION) {
+            key = keyfn->data.native(key_args, NULL, error);
+        } else {
+            Env *frame = env_create(keyfn->data.function.env);
+            if (!bind_params(keyfn->data.function.params, key_args, frame, error)) { free(pairs); return NULL; }
+            Value *body = keyfn->data.function.body;
+            Value *bit = body;
+            while (!is_nil(bit->data.list.cdr)) {
+                Value *v = eval(bit->data.list.car, frame, error);
+                if (!v || (error && *error)) { free(pairs); return NULL; }
+                bit = bit->data.list.cdr;
+            }
+            key = eval(bit->data.list.car, frame, error);
+        }
+        if (!key || (error && *error)) { free(pairs); return NULL; }
+        if (count == cap) { cap = cap ? cap * 2 : 8; pairs = checked_realloc(pairs, cap * sizeof(SortByPair)); }
+        pairs[count].key = key;
+        pairs[count].val = item;
+        count++;
+    }
+    if (count > 0) qsort(pairs, count, sizeof(SortByPair), sort_by_pair_cmp);
+    Value **vals = checked_malloc(count * sizeof(Value *));
+    for (size_t i = 0; i < count; i++) vals[i] = pairs[i].val;
+    Value *result = list_from_array(vals, count);
+    free(pairs);
+    free(vals);
+    return result;
+}
+
 static void register_builtin(Env *env, const char *name, NativeFn fn, const char *doc) {
     Value *value = make_native(fn, doc);
     env_define(env, name, value);
@@ -2796,6 +3299,19 @@ static void install_builtins(Env *env) {
     register_builtin(env, "vals", builtin_vals, "vals");
     register_builtin(env, "map?", builtin_is_map, "map?");
     register_builtin(env, "contains?", builtin_contains, "contains?");
+    register_builtin(env, "parse-number", builtin_parse_number, "parse-number");
+    register_builtin(env, "upper-case", builtin_upper_case, "upper-case");
+    register_builtin(env, "lower-case", builtin_lower_case, "lower-case");
+    register_builtin(env, "trim", builtin_trim, "trim");
+    register_builtin(env, "substring", builtin_substring, "substring");
+    register_builtin(env, "starts-with?", builtin_starts_with, "starts-with?");
+    register_builtin(env, "ends-with?", builtin_ends_with, "ends-with?");
+    register_builtin(env, "replace", builtin_replace, "replace");
+    register_builtin(env, "index-of", builtin_index_of, "index-of");
+    register_builtin(env, "str/join", builtin_str_join, "str/join");
+    register_builtin(env, "format", builtin_format, "format");
+    register_builtin(env, "sort", builtin_sort, "sort");
+    register_builtin(env, "sort-by", builtin_sort_by, "sort-by");
 }
 
 static void append_input(char **buffer, size_t *length, size_t *capacity, const char *line) {
