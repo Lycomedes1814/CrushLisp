@@ -77,6 +77,19 @@ struct Env {
 };
 
 static const double EPSILON = 1e-9;
+static const char *STDLIB_SOURCE =
+"(def map (fn [f coll]"
+"  (if (= coll nil)"
+"    nil"
+"    (cons (f (first coll)) (map f (rest coll))))))"
+"(def filter (fn [f coll]"
+"  (if (= coll nil)"
+"    nil"
+"    (if (f (first coll))"
+"      (cons (first coll) (filter f (rest coll)))"
+"      (filter f (rest coll))))))"
+;
+
 static const char *HELP_TEXT =
 "CrushLisp special forms:\n"
 "  (quote x)          return x without evaluation\n"
@@ -2411,6 +2424,34 @@ int main(int argc, char **argv) {
     Env *global = env_create(NULL);
     global_environment = global;
     install_builtins(global);
+
+    /* Load embedded stdlib */
+    {
+        const char *src = STDLIB_SOURCE;
+        size_t src_len = strlen(src);
+        size_t consumed = 0;
+        while (consumed < src_len) {
+            Value *expr = NULL;
+            char *error = NULL;
+            size_t n = 0;
+            ParseStatus status = parse_expr(src + consumed, &n, &expr, &error);
+            if (status == PARSE_ERROR || status == PARSE_INCOMPLETE) {
+                fprintf(stderr, "stdlib error: %s\n", error ? error : "parse failed");
+                free(error);
+                return 1;
+            }
+            if (status == PARSE_END) break;
+            consumed += n;
+            current_eval_depth = 0;
+            Value *result = eval(expr, global, &error);
+            if (!result || error) {
+                fprintf(stderr, "stdlib error: %s\n", error ? error : "eval failed");
+                free(error);
+                return 1;
+            }
+        }
+    }
+
     repl(global, silent);
     return 0;
 }

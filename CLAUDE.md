@@ -314,7 +314,7 @@ make clean && make 2>&1 | grep warning   # Check for new warnings
 
 ### Standard Library (`src/functions.cl`)
 
-**NOT auto-loaded.** Load explicitly: `(load "src/functions.cl")`
+Embedded as `STDLIB_SOURCE` in `crushlisp.c` and evaluated automatically at startup before the REPL begins. `src/functions.cl` is kept as the canonical source; if you edit it, sync the embedded copy in `STDLIB_SOURCE`.
 
 ```lisp
 (def map    (fn [f coll] ...))   ; list transformation
