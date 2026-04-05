@@ -20,7 +20,9 @@ typedef enum {
     TYPE_LIST,
     TYPE_VECTOR,
     TYPE_FUNCTION,
-    TYPE_NATIVE_FUNCTION
+    TYPE_NATIVE_FUNCTION,
+    TYPE_RECUR,      /* sentinel: carries recur args back to loop */
+    TYPE_MAP         /* linked list of (key . value) pairs */
 } ValueType;
 
 typedef struct Value Value;
@@ -92,42 +94,57 @@ static const char *STDLIB_SOURCE =
 
 static const char *HELP_TEXT =
 "CrushLisp special forms:\n"
-"  (quote x)          return x without evaluation\n"
-"  (if test then else) conditional branching\n"
-"  (def name value)   bind a global name\n"
-"  (let [name value ...] body...) scoped locals ([] or () for bindings)\n"
-"  (fn [params...] body...) anonymous function ([] or () for params)\n"
-"    variadic: (fn [a b & rest] body) - rest gets remaining args as list\n"
-"  (do expr...)       evaluate expressions sequentially\n"
-"  (and expr...)      short-circuit logical and, returns last truthy or first falsy\n"
-"  (or expr...)       short-circuit logical or, returns first truthy or last falsy\n\n"
+"  (quote x)              return x without evaluation\n"
+"  (if test then [else])  conditional; else optional, defaults to nil\n"
+"  (when test body...)    if truthy, eval body, else nil\n"
+"  (def name value)       bind a global name\n"
+"  (let [name val ...] body...) scoped locals\n"
+"  (fn [params...] body...) anonymous function; variadic: (fn [a & rest] ...)\n"
+"  (do expr...)           evaluate sequentially, return last\n"
+"  (and expr...)          short-circuit and\n"
+"  (or expr...)           short-circuit or\n"
+"  (loop [name val ...] body...) iteration; use recur to jump back\n"
+"  (recur args...)        jump to enclosing loop with new values\n"
+"  (try body (catch e handler...)) catch errors thrown by throw\n"
+"  (throw message)        signal an error\n\n"
 "Data structures:\n"
-"  (list values...)   list literal (for code/function calls)\n"
-"  [values...]        vector literal (for data)\n\n"
+"  (list values...)       list\n"
+"  [values...]            vector\n"
+"  (hash-map k v ...)     map\n\n"
 "Functions:\n"
-"  (+ - * / mod inc dec) arithmetic\n"
-"  (= < <= > >=)         comparisons\n"
-"  (not x)               logical negation\n"
-"  (first coll)          first element\n"
-"  (rest coll)           remaining elements\n"
-"  (cons x coll)         prepend value\n"
-"  (conj coll values...) prepend values\n"
-"  (count coll)          collection size\n"
-"  (nth coll index)      element at index\n"
-"  (str values...)       concatenate\n"
-"  (split s delim)       split string on one-character delimiter\n"
-"  (print values...)     write without newline\n"
-"  (println values...)   write with newline\n"
-"  (eval expr)           evaluate expression or string\n"
-"  (slurp filename)      read file contents\n"
+"  (+ - * / mod inc dec)  arithmetic\n"
+"  (= < <= > >=)          comparisons\n"
+"  (not x)                logical negation\n"
+"  (apply f arg... list)  call f with args spliced from final list\n"
+"  (reduce f init coll)   fold collection\n"
+"  (map f coll)           transform collection (stdlib)\n"
+"  (filter f coll)        filter collection (stdlib)\n"
+"  (first coll)           first element\n"
+"  (rest coll)            remaining elements\n"
+"  (cons x coll)          prepend value\n"
+"  (conj coll values...)  append values\n"
+"  (count coll)           collection size\n"
+"  (nth coll index)       element at index\n"
+"  (get map key [default]) look up key in map (or index in list/vector)\n"
+"  (assoc map k v ...)    add/update map entries\n"
+"  (dissoc map k ...)     remove map entries\n"
+"  (keys map)             list of keys\n"
+"  (vals map)             list of values\n"
+"  (contains? map key)    true if map has key\n"
+"  (str values...)        concatenate as strings\n"
+"  (split s delim)        split string on one-character delimiter\n"
+"  (print values...)      write without newline\n"
+"  (println values...)    write with newline\n"
+"  (eval expr)            evaluate expression or string\n"
+"  (slurp filename)       read file contents\n"
 "  (spit filename content) write string to file\n"
-"  (load filename)       read and evaluate file (= eval + slurp)\n"
-"  (sh command)          execute shell command string, return output\n"
-"  (run program args...) execute program directly (no shell), return output\n"
-"  (help)                show this message\n\n"
+"  (load filename)        read and evaluate file\n"
+"  (sh command)           execute shell command, return output\n"
+"  (run program args...)  execute program directly (no shell)\n"
+"  (help)                 show this message\n\n"
 "Type predicates:\n"
-"  (nil? x)    (number? x)  (string? x)  (bool? x)\n"
-"  (symbol? x) (list? x)    (vector? x)  (fn? x)\n";
+"  (nil? x)  (number? x)  (string? x)  (bool? x)  (symbol? x)\n"
+"  (list? x) (vector? x)  (fn? x)      (map? x)\n";
 
 static Value VALUE_NIL = { TYPE_NIL, {0}, NULL };
 static Value VALUE_TRUE = { TYPE_BOOL, { .boolean = 1 }, NULL };
@@ -276,6 +293,13 @@ static Value *make_function(Value *params, Value *body, Env *env) {
     return value;
 }
 
+static Value *make_recur(Value *args) {
+    Value *value = allocate_value(TYPE_RECUR);
+    value->data.list.car = args;  /* reuse list.car to hold the recur args */
+    value->data.list.cdr = NULL;
+    return value;
+}
+
 static int is_nil(Value *value) {
     return value == NULL || value->type == TYPE_NIL;
 }
@@ -300,6 +324,71 @@ static Value *vcons(Value *car, Value *cdr) {
     value->data.vector.car = car;
     value->data.vector.cdr = cdr ? cdr : value_nil();
     return value;
+}
+
+static int value_equals(Value *a, Value *b);  /* forward declaration */
+
+/* Map: TYPE_MAP node whose list.car holds a list of (key . val) cons pairs */
+static Value *make_empty_map(void) {
+    Value *m = allocate_value(TYPE_MAP);
+    m->data.list.car = value_nil();  /* pair list */
+    m->data.list.cdr = value_nil();
+    return m;
+}
+
+static int is_map(Value *v) { return v && v->type == TYPE_MAP; }
+
+/* Return the value for key in map, or NULL if not found */
+static Value *map_get(Value *map, Value *key) {
+    Value *pairs = map->data.list.car;
+    while (!is_nil(pairs)) {
+        Value *pair = pairs->data.list.car;  /* (key . val) cons */
+        if (value_equals(pair->data.list.car, key)) return pair->data.list.cdr;
+        pairs = pairs->data.list.cdr;
+    }
+    return NULL;
+}
+
+/* Return new map with key -> val set (copy-on-write) */
+static Value *map_assoc(Value *map, Value *key, Value *val) {
+    Value *new_map = make_empty_map();
+    /* Copy existing pairs, skipping old binding for key */
+    Value *src = map->data.list.car;
+    Value *head = value_nil();
+    Value *tail = NULL;
+    while (!is_nil(src)) {
+        Value *pair = src->data.list.car;
+        if (!value_equals(pair->data.list.car, key)) {
+            Value *node = cons(pair, value_nil());
+            if (!tail) head = node; else tail->data.list.cdr = node;
+            tail = node;
+        }
+        src = src->data.list.cdr;
+    }
+    /* Prepend new pair */
+    Value *new_pair = cons(key, val);
+    Value *new_node = cons(new_pair, head);
+    new_map->data.list.car = new_node;
+    return new_map;
+}
+
+/* Return new map with key removed */
+static Value *map_dissoc(Value *map, Value *key) {
+    Value *new_map = make_empty_map();
+    Value *src = map->data.list.car;
+    Value *head = value_nil();
+    Value *tail = NULL;
+    while (!is_nil(src)) {
+        Value *pair = src->data.list.car;
+        if (!value_equals(pair->data.list.car, key)) {
+            Value *node = cons(pair, value_nil());
+            if (!tail) head = node; else tail->data.list.cdr = node;
+            tail = node;
+        }
+        src = src->data.list.cdr;
+    }
+    new_map->data.list.car = head;
+    return new_map;
 }
 
 static size_t list_length(Value *list) {
@@ -479,6 +568,8 @@ static int value_equals(Value *a, Value *b) {
         }
         case TYPE_FUNCTION:
         case TYPE_NATIVE_FUNCTION:
+        case TYPE_RECUR:
+        case TYPE_MAP:
             return a == b;
     }
     return 0;
@@ -610,6 +701,25 @@ static void write_value(StringBuilder *sb, Value *value, int readable) {
         case TYPE_NIL:
             sb_append(sb, "nil");
             break;
+        case TYPE_RECUR:
+            sb_append(sb, "<recur>");
+            break;
+        case TYPE_MAP: {
+            sb_append_char(sb, '{');
+            Value *pairs = value->data.list.car;
+            int first = 1;
+            while (!is_nil(pairs)) {
+                Value *pair = pairs->data.list.car;
+                if (!first) sb_append_char(sb, ' ');
+                write_value(sb, pair->data.list.car, readable);
+                sb_append_char(sb, ' ');
+                write_value(sb, pair->data.list.cdr, readable);
+                first = 0;
+                pairs = pairs->data.list.cdr;
+            }
+            sb_append_char(sb, '}');
+            break;
+        }
     }
 }
 
@@ -1276,6 +1386,172 @@ tco_loop:
                     }
                     expr = or_iter->data.list.car;
                     goto tco_loop;
+                }
+                /* when: (when test body...) — if test is truthy, eval body, else nil */
+                if (strcmp(sname, "when") == 0) {
+                    if (is_nil(args)) { result = value_nil(); goto done; }
+                    Value *w_cond = eval(args->data.list.car, env, error);
+                    if (error && *error) goto done;
+                    if (!is_truthy(w_cond)) { result = value_nil(); goto done; }
+                    Value *w_body = args->data.list.cdr;
+                    if (is_nil(w_body)) { result = value_nil(); goto done; }
+                    Value *witer = w_body;
+                    while (!is_nil(witer->data.list.cdr)) {
+                        Value *v = eval(witer->data.list.car, env, error);
+                        if (!v || (error && *error)) goto done;
+                        witer = witer->data.list.cdr;
+                    }
+                    expr = witer->data.list.car;
+                    goto tco_loop;
+                }
+                /* throw: (throw message) — signal an error */
+                if (strcmp(sname, "throw") == 0) {
+                    if (!require_exact_args(args, 1, error, "throw")) goto done;
+                    Value *msg = eval(args->data.list.car, env, error);
+                    if (error && *error) goto done;
+                    char *msg_str = value_to_string(msg, 0);
+                    set_error(error, "%s", msg_str);
+                    free(msg_str);
+                    goto done;
+                }
+                /* try: (try body (catch e handler...))
+                   Evaluates body; if it errors, binds the message to e and runs handler. */
+                if (strcmp(sname, "try") == 0) {
+                    if (is_nil(args)) { result = value_nil(); goto done; }
+                    Value *try_body = args->data.list.car;
+                    Value *catch_form = is_nil(args->data.list.cdr) ? NULL
+                                       : args->data.list.cdr->data.list.car;
+                    char *try_err = NULL;
+                    current_eval_depth = 0;
+                    Value *try_result = eval(try_body, env, &try_err);
+                    if (try_err) {
+                        /* Error occurred — run catch clause if present */
+                        if (!catch_form || !is_list(catch_form) ||
+                            is_nil(catch_form) ||
+                            catch_form->data.list.car->type != TYPE_SYMBOL ||
+                            strcmp(catch_form->data.list.car->data.string, "catch") != 0) {
+                            /* No valid catch — re-raise */
+                            set_error(error, "%s", try_err);
+                            free(try_err);
+                            goto done;
+                        }
+                        Value *catch_args = catch_form->data.list.cdr;
+                        if (is_nil(catch_args) || !is_list(catch_args) ||
+                            catch_args->data.list.car->type != TYPE_SYMBOL) {
+                            set_error(error, "catch expects a binding name");
+                            free(try_err);
+                            goto done;
+                        }
+                        const char *bind_name = catch_args->data.list.car->data.string;
+                        Value *handler_body = catch_args->data.list.cdr;
+                        Env *catch_env = env_create(env);
+                        Value *err_val = make_string_owned(try_err); /* try_err ownership transferred */
+                        env_define(catch_env, bind_name, err_val);
+                        if (is_nil(handler_body)) { result = value_nil(); goto done; }
+                        Value *hiter = handler_body;
+                        while (!is_nil(hiter->data.list.cdr)) {
+                            Value *v = eval(hiter->data.list.car, catch_env, error);
+                            if (!v || (error && *error)) goto done;
+                            hiter = hiter->data.list.cdr;
+                        }
+                        result = eval(hiter->data.list.car, catch_env, error);
+                        goto done;
+                    }
+                    result = try_result;
+                    goto done;
+                }
+                /* recur: evaluate args and return a RECUR sentinel */
+                if (strcmp(sname, "recur") == 0) {
+                    Value *recur_args = eval_args(args, env, error);
+                    if (error && *error) goto done;
+                    result = make_recur(recur_args);
+                    goto done;
+                }
+                /* loop: (loop [bindings...] body...)
+                   Like let but loops when body returns a RECUR sentinel. */
+                if (strcmp(sname, "loop") == 0) {
+                    if (is_nil(args) || !is_list(args)) {
+                        set_error(error, "loop expects binding vector and body");
+                        goto done;
+                    }
+                    Value *binding_form = args->data.list.car;
+                    if (!(is_nil(binding_form) || is_list(binding_form) || is_vector(binding_form))) {
+                        set_error(error, "loop bindings must be a list or vector");
+                        goto done;
+                    }
+                    Value *bindings = is_vector(binding_form) ? vector_to_list(binding_form) : binding_form;
+                    /* Collect binding names so we can rebind on recur */
+                    size_t nbinds = 0;
+                    Value *bcount_iter = bindings;
+                    while (!is_nil(bcount_iter)) {
+                        nbinds++;
+                        bcount_iter = bcount_iter->data.list.cdr;
+                        if (!is_nil(bcount_iter)) { nbinds--; bcount_iter = bcount_iter->data.list.cdr; nbinds++; }
+                    }
+                    /* Re-count properly: pairs */
+                    nbinds = 0;
+                    bcount_iter = bindings;
+                    while (!is_nil(bcount_iter) && !is_nil(bcount_iter->data.list.cdr)) {
+                        nbinds++;
+                        bcount_iter = bcount_iter->data.list.cdr->data.list.cdr;
+                    }
+                    char **bind_names = checked_malloc(nbinds * sizeof(char *));
+                    Value *loop_body = args->data.list.cdr;
+                    /* Initial binding evaluation */
+                    Env *loop_frame = env_create(env);
+                    {
+                        Value *biter = bindings;
+                        int berr = 0;
+                        size_t bi = 0;
+                        while (!is_nil(biter)) {
+                            Value *bname = biter->data.list.car;
+                            biter = biter->data.list.cdr;
+                            if (is_nil(biter)) { set_error(error, "loop binding missing value"); berr = 1; break; }
+                            Value *bexpr = biter->data.list.car;
+                            biter = biter->data.list.cdr;
+                            if (!bname || bname->type != TYPE_SYMBOL) {
+                                set_error(error, "loop binding name must be a symbol");
+                                berr = 1; break;
+                            }
+                            Value *bval = eval(bexpr, loop_frame, error);
+                            if (!bval || (error && *error)) { berr = 1; break; }
+                            env_define(loop_frame, bname->data.string, bval);
+                            bind_names[bi++] = bname->data.string;
+                        }
+                        if (berr) { free(bind_names); goto done; }
+                    }
+                    /* Loop: eval body; if result is RECUR, rebind and repeat */
+                    while (1) {
+                        if (is_nil(loop_body)) { result = value_nil(); break; }
+                        Value *liter = loop_body;
+                        Value *lresult = value_nil();
+                        int lerr = 0;
+                        while (!is_nil(liter)) {
+                            lresult = eval(liter->data.list.car, loop_frame, error);
+                            if (!lresult || (error && *error)) { lerr = 1; break; }
+                            liter = liter->data.list.cdr;
+                        }
+                        if (lerr) { result = NULL; break; }
+                        if (lresult && lresult->type == TYPE_RECUR) {
+                            /* Rebind loop vars with recur args */
+                            Value *recur_args = lresult->data.list.car;
+                            size_t ri = 0;
+                            Value *riter = recur_args;
+                            while (ri < nbinds && !is_nil(riter)) {
+                                env_define(loop_frame, bind_names[ri], riter->data.list.car);
+                                ri++; riter = riter->data.list.cdr;
+                            }
+                            if (ri != nbinds || !is_nil(riter)) {
+                                set_error(error, "recur: wrong number of arguments for loop");
+                                result = NULL; break;
+                            }
+                        } else {
+                            result = lresult;
+                            break;
+                        }
+                    }
+                    free(bind_names);
+                    goto done;
                 }
             }
             /* function call */
@@ -2251,6 +2527,220 @@ static Value *builtin_not(Value *args, Env *env, char **error) {
     return is_truthy(args->data.list.car) ? value_false() : value_true();
 }
 
+/* hash-map: (hash-map k1 v1 k2 v2 ...) */
+static Value *builtin_hash_map(Value *args, Env *env, char **error) {
+    (void)env;
+    Value *m = make_empty_map();
+    Value *iter = args;
+    while (!is_nil(iter)) {
+        Value *k = iter->data.list.car;
+        iter = iter->data.list.cdr;
+        if (is_nil(iter)) {
+            set_error(error, "hash-map: odd number of arguments");
+            return NULL;
+        }
+        Value *v = iter->data.list.car;
+        iter = iter->data.list.cdr;
+        m = map_assoc(m, k, v);
+    }
+    return m;
+}
+
+static Value *builtin_get(Value *args, Env *env, char **error) {
+    (void)env;
+    if (!require_arg_range(args, 2, 3, error, "get")) return NULL;
+    Value *coll = args->data.list.car;
+    Value *key = args->data.list.cdr->data.list.car;
+    Value *not_found = is_nil(args->data.list.cdr->data.list.cdr)
+                       ? value_nil()
+                       : args->data.list.cdr->data.list.cdr->data.list.car;
+    if (is_map(coll)) {
+        Value *found = map_get(coll, key);
+        return found ? found : not_found;
+    }
+    /* get on list/vector by index */
+    if (is_list(coll) || is_vector(coll)) {
+        size_t idx;
+        if (!value_to_index(key, &idx, error, "get")) return NULL;
+        Value *it = coll;
+        for (size_t i = 0; i < idx; i++) {
+            if (is_nil(it)) return not_found;
+            it = is_list(it) ? it->data.list.cdr : it->data.vector.cdr;
+        }
+        if (is_nil(it)) return not_found;
+        return is_list(it) ? it->data.list.car : it->data.vector.car;
+    }
+    set_error(error, "get: expected map, list, or vector");
+    return NULL;
+}
+
+static Value *builtin_assoc(Value *args, Env *env, char **error) {
+    (void)env;
+    if (is_nil(args) || is_nil(args->data.list.cdr)) {
+        set_error(error, "assoc: requires map and key-value pairs");
+        return NULL;
+    }
+    Value *m = args->data.list.car;
+    if (!is_map(m)) { set_error(error, "assoc: first argument must be a map"); return NULL; }
+    Value *iter = args->data.list.cdr;
+    while (!is_nil(iter)) {
+        Value *k = iter->data.list.car;
+        iter = iter->data.list.cdr;
+        if (is_nil(iter)) { set_error(error, "assoc: odd number of key-value pairs"); return NULL; }
+        Value *v = iter->data.list.car;
+        iter = iter->data.list.cdr;
+        m = map_assoc(m, k, v);
+    }
+    return m;
+}
+
+static Value *builtin_dissoc(Value *args, Env *env, char **error) {
+    (void)env;
+    if (is_nil(args)) { set_error(error, "dissoc: requires a map"); return NULL; }
+    Value *m = args->data.list.car;
+    if (!is_map(m)) { set_error(error, "dissoc: first argument must be a map"); return NULL; }
+    Value *iter = args->data.list.cdr;
+    while (!is_nil(iter)) {
+        m = map_dissoc(m, iter->data.list.car);
+        iter = iter->data.list.cdr;
+    }
+    return m;
+}
+
+static Value *builtin_keys(Value *args, Env *env, char **error) {
+    (void)env;
+    if (!require_exact_args(args, 1, error, "keys")) return NULL;
+    Value *m = args->data.list.car;
+    if (!is_map(m)) { set_error(error, "keys: expected a map"); return NULL; }
+    Value *head = value_nil(), *tail = NULL;
+    Value *pairs = m->data.list.car;
+    while (!is_nil(pairs)) {
+        Value *node = cons(pairs->data.list.car->data.list.car, value_nil());
+        if (!tail) head = node; else tail->data.list.cdr = node;
+        tail = node;
+        pairs = pairs->data.list.cdr;
+    }
+    return head;
+}
+
+static Value *builtin_vals(Value *args, Env *env, char **error) {
+    (void)env;
+    if (!require_exact_args(args, 1, error, "vals")) return NULL;
+    Value *m = args->data.list.car;
+    if (!is_map(m)) { set_error(error, "vals: expected a map"); return NULL; }
+    Value *head = value_nil(), *tail = NULL;
+    Value *pairs = m->data.list.car;
+    while (!is_nil(pairs)) {
+        Value *node = cons(pairs->data.list.car->data.list.cdr, value_nil());
+        if (!tail) head = node; else tail->data.list.cdr = node;
+        tail = node;
+        pairs = pairs->data.list.cdr;
+    }
+    return head;
+}
+
+static Value *builtin_is_map(Value *args, Env *env, char **error) {
+    (void)env;
+    if (!require_exact_args(args, 1, error, "map?")) return NULL;
+    return is_map(args->data.list.car) ? value_true() : value_false();
+}
+
+/* contains?: (contains? map key) */
+static Value *builtin_contains(Value *args, Env *env, char **error) {
+    (void)env;
+    if (!require_exact_args(args, 2, error, "contains?")) return NULL;
+    Value *m = args->data.list.car;
+    Value *key = args->data.list.cdr->data.list.car;
+    if (!is_map(m)) { set_error(error, "contains?: expected a map"); return NULL; }
+    return map_get(m, key) ? value_true() : value_false();
+}
+
+/* reduce: (reduce f init coll) */
+static Value *builtin_reduce(Value *args, Env *env, char **error) {
+    (void)env;
+    if (!require_exact_args(args, 3, error, "reduce")) return NULL;
+    Value *callable = args->data.list.car;
+    if (callable->type != TYPE_FUNCTION && callable->type != TYPE_NATIVE_FUNCTION) {
+        set_error(error, "reduce: first argument must be a function");
+        return NULL;
+    }
+    Value *acc = args->data.list.cdr->data.list.car;
+    Value *coll = args->data.list.cdr->data.list.cdr->data.list.car;
+    Value *iter = coll;
+    while (!is_nil(iter)) {
+        if (!is_list(iter)) { set_error(error, "reduce: collection must be a list"); return NULL; }
+        Value *item = iter->data.list.car;
+        Value *call_args = cons(acc, cons(item, value_nil()));
+        if (callable->type == TYPE_NATIVE_FUNCTION) {
+            acc = callable->data.native(call_args, NULL, error);
+        } else {
+            Env *frame = env_create(callable->data.function.env);
+            if (!bind_params(callable->data.function.params, call_args, frame, error)) return NULL;
+            Value *body = callable->data.function.body;
+            Value *bit = body;
+            while (!is_nil(bit->data.list.cdr)) {
+                Value *v = eval(bit->data.list.car, frame, error);
+                if (!v || (error && *error)) return NULL;
+                bit = bit->data.list.cdr;
+            }
+            acc = eval(bit->data.list.car, frame, error);
+        }
+        if (!acc || (error && *error)) return NULL;
+        iter = iter->data.list.cdr;
+    }
+    return acc;
+}
+
+/* apply: (apply f arg1 ... arglist)
+   All args before the last are prepended to the final list arg. */
+static Value *builtin_apply(Value *args, Env *env, char **error) {
+    (void)env;
+    if (is_nil(args) || is_nil(args->data.list.cdr)) {
+        set_error(error, "apply: requires at least 2 arguments");
+        return NULL;
+    }
+    Value *callable = args->data.list.car;
+    if (callable->type != TYPE_FUNCTION && callable->type != TYPE_NATIVE_FUNCTION) {
+        set_error(error, "apply: first argument must be a function");
+        return NULL;
+    }
+    /* Collect leading args, then splice in the final list */
+    Value *rest = args->data.list.cdr;
+    /* Build arg list: all but last are individual values, last must be a list/nil */
+    Value *head = value_nil();
+    Value *tail = NULL;
+    while (!is_nil(rest->data.list.cdr)) {
+        Value *node = cons(rest->data.list.car, value_nil());
+        if (!tail) head = node; else tail->data.list.cdr = node;
+        tail = node;
+        rest = rest->data.list.cdr;
+    }
+    /* rest->car is the final list; splice it on */
+    Value *final_list = rest->data.list.car;
+    if (!is_nil(final_list) && !is_list(final_list)) {
+        set_error(error, "apply: last argument must be a list");
+        return NULL;
+    }
+    if (tail) tail->data.list.cdr = final_list;
+    else head = final_list;
+
+    if (callable->type == TYPE_NATIVE_FUNCTION) {
+        return callable->data.native(head, NULL, error);
+    }
+    /* User function: bind params and eval body */
+    Env *frame = env_create(callable->data.function.env);
+    if (!bind_params(callable->data.function.params, head, frame, error)) return NULL;
+    Value *body = callable->data.function.body;
+    if (is_nil(body)) return value_nil();
+    Value *iter = body;
+    while (!is_nil(iter->data.list.cdr)) {
+        Value *v = eval(iter->data.list.car, frame, error);
+        if (!v || (error && *error)) return NULL;
+        iter = iter->data.list.cdr;
+    }
+    return eval(iter->data.list.car, frame, error);
+}
+
 static void register_builtin(Env *env, const char *name, NativeFn fn, const char *doc) {
     Value *value = make_native(fn, doc);
     env_define(env, name, value);
@@ -2296,6 +2786,16 @@ static void install_builtins(Env *env) {
     register_builtin(env, "vector?", builtin_is_vector, "vector?");
     register_builtin(env, "fn?", builtin_is_fn, "fn?");
     register_builtin(env, "not", builtin_not, "not");
+    register_builtin(env, "apply", builtin_apply, "apply");
+    register_builtin(env, "reduce", builtin_reduce, "reduce");
+    register_builtin(env, "hash-map", builtin_hash_map, "hash-map");
+    register_builtin(env, "get", builtin_get, "get");
+    register_builtin(env, "assoc", builtin_assoc, "assoc");
+    register_builtin(env, "dissoc", builtin_dissoc, "dissoc");
+    register_builtin(env, "keys", builtin_keys, "keys");
+    register_builtin(env, "vals", builtin_vals, "vals");
+    register_builtin(env, "map?", builtin_is_map, "map?");
+    register_builtin(env, "contains?", builtin_contains, "contains?");
 }
 
 static void append_input(char **buffer, size_t *length, size_t *capacity, const char *line) {

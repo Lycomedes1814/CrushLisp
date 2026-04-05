@@ -95,26 +95,33 @@ VALUE_FALSE  // false
 |------|--------|-------|
 | `quote` | `(quote x)` or `'x` | Returns unevaluated |
 | `if` | `(if test then [else])` | else is optional → returns nil |
+| `when` | `(when test body...)` | Runs body if truthy, else nil |
 | `def` | `(def name value)` | Binds in global env |
 | `let` | `(let [name val ...] body...)` | Local scope; `[]` or `()` accepted |
-| `fn` | `(fn [params...] body...)` | Closure; `[]` or `()` for params; variadic: `(fn [a & rest] ...)` |
+| `fn` | `(fn [params...] body...)` | Closure; variadic: `(fn [a & rest] ...)` |
 | `do` | `(do expr...)` | Sequential eval, returns last |
 | `and` | `(and expr...)` | Short-circuit; returns last truthy or first falsy |
 | `or` | `(or expr...)` | Short-circuit; returns first truthy or last falsy |
+| `loop` | `(loop [name val ...] body...)` | Iterates; body uses `recur` to jump back |
+| `recur` | `(recur args...)` | Restarts enclosing `loop` with new values; no stack growth |
+| `try` | `(try body (catch e handler...))` | Catches errors; `e` is bound to the message string |
+| `throw` | `(throw message)` | Signals an error |
 
 ### Built-in Functions (40+)
 
 ```
 Arithmetic:     +  -  *  /  mod  inc  dec
 Comparison:     =  <  <=  >  >=
+Logic:          not  and  or
+Higher-order:   apply  reduce  map  filter  (map/filter from stdlib)
 Collections:    list  first  rest  cons  conj  count  nth
+Maps:           hash-map  get  assoc  dissoc  keys  vals  contains?
 Strings:        str  split
 I/O:            print  println  slurp  spit  load
 Eval:           eval
 System:         sh  run
 Meta:           help
-Type predicates: nil?  number?  string?  bool?  symbol?  list?  vector?  fn?
-Logic:          not
+Type predicates: nil?  number?  string?  bool?  symbol?  list?  vector?  fn?  map?
 ```
 
 **`sh` vs `run`**:
@@ -323,11 +330,11 @@ Embedded as `STDLIB_SOURCE` (a C string constant near the top of `crushlisp.c`) 
 ## Differences from Clojure/Standard Lisps
 
 - No macros, no `defmacro`
-- No tail-call optimization (TCO) for user functions (special forms use internal goto loop)
+- No tail-call optimization (TCO) for user functions; use `loop`/`recur` for iteration
 - No continuations (`call/cc`)
 - All numbers are doubles (no integer type, no bignums)
-- No keywords (`:foo`); use symbols
-- No map literals `{}` (explicitly rejected by parser)
+- No keywords (`:foo`); use strings or symbols as map keys
+- No map literals `{}` (explicitly rejected by parser); use `(hash-map k v ...)`
 - No destructuring in `let` or `fn` params; variadic `& rest` is supported in `fn`
 - `fn` accepts `[]` or `()` for parameter lists
 - `let` accepts `[]` or `()` for binding vector

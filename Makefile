@@ -41,7 +41,7 @@ test: $(TARGET)
 	@echo "((fn [x y] (+ x y)) 3 5)" | ./$(TARGET) | grep -qx "8" && echo "✓ Function with vector params test passed"
 	@test "$$(echo '(+ 2 2)' | ./$(TARGET) -s | wc -l)" -eq 0 && echo "✓ Silent mode test passed"
 	@echo "(println \"test\")" | ./$(TARGET) -s | grep -qx "test" && echo "✓ Silent mode println test passed"
-	@echo "(def loop (fn () (loop))) (loop)" | ./$(TARGET) 2>&1 | grep -q "Stack overflow" && echo "✓ Stack overflow protection test passed"
+	@echo "(def recurse-inf (fn () (recurse-inf))) (recurse-inf)" | ./$(TARGET) 2>&1 | grep -q "Stack overflow" && echo "✓ Stack overflow protection test passed"
 	@echo '(eval "(+ 1 2 3)")' | ./$(TARGET) | grep -qx "6" && echo "✓ Eval test passed"
 	@echo '(quote)' | ./$(TARGET) 2>&1 | grep -q "quote expects exactly 1 argument" && echo "✓ Quote arity validation test passed"
 	@echo '(inc 1 2)' | ./$(TARGET) 2>&1 | grep -q "inc expects exactly 1 argument" && echo "✓ Builtin arity validation test passed"
