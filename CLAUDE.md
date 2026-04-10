@@ -27,7 +27,7 @@ echo "(+ 1 2)" | ./crushlisp  # Pipe mode
 ./crushlisp < script.lisp     # File redirect
 ```
 
-**After any code change**: always run `make && make test` to verify zero warnings and all tests pass (currently 71 tests).
+**After any code change**: always run `make && make test` to verify zero warnings and all tests pass (currently 75 tests).
 
 ## Repository Structure
 
@@ -98,6 +98,7 @@ VALUE_FALSE  // false
 | `when` | `(when test body...)` | Runs body if truthy, else nil |
 | `def` | `(def name value)` | Binds in global env |
 | `defn` | `(defn name [params...] body...)` | Shorthand for `(def name (fn [params...] body...))` |
+| `defmacro` | `(defmacro name [params...] body...)` | Define a macro; receives unevaluated args, result is eval'd |
 | `let` | `(let [name val ...] body...)` | Local scope; `[]` or `()` accepted |
 | `fn` | `(fn [params...] body...)` | Closure; variadic: `(fn [a & rest] ...)` |
 | `do` | `(do expr...)` | Sequential eval, returns last |
@@ -127,8 +128,8 @@ Strings:        str  str/join  split  upper-case  lower-case  trim
 I/O:            print  println  slurp  spit  load
 Eval:           eval
 System:         sh  run
-Meta:           help
-Type predicates: nil?  number?  string?  bool?  symbol?  list?  vector?  fn?  map?
+Meta:           help  macroexpand
+Type predicates: nil?  number?  string?  bool?  symbol?  list?  vector?  fn?  macro?  map?
 ```
 
 **`sh` vs `run`**:
@@ -234,7 +235,7 @@ For stderr (errors, stack overflow, etc.):
 
 ### Current Test Coverage
 
-71 tests covering: arithmetic, variables, conditionals, lists, vectors, vector evaluation, vector collection ops, functions with vector params, silent mode, stack overflow, eval, arity validation, shell exit status, file I/O (slurp/spit roundtrip), load, let with vector syntax, conj/cons on vectors, all 8 type predicates, apply, reduce, loop/recur, try/throw, when, hash maps, stdlib map/filter, string functions (upper-case, lower-case, trim, substring, starts-with?, ends-with?, replace, index-of, str/join, format, parse-number), sort, sort-by, contains? on strings, threading macros (-> and ->>), doseq, dotimes, defn.
+75 tests covering: arithmetic, variables, conditionals, lists, vectors, vector evaluation, vector collection ops, functions with vector params, silent mode, stack overflow, eval, arity validation, shell exit status, file I/O (slurp/spit roundtrip), load, let with vector syntax, conj/cons on vectors, all 8 type predicates, apply, reduce, loop/recur, try/throw, when, hash maps, stdlib map/filter, string functions (upper-case, lower-case, trim, substring, starts-with?, ends-with?, replace, index-of, str/join, format, parse-number), sort, sort-by, contains? on strings, threading macros (-> and ->>), doseq, dotimes, defn, defmacro, macroexpand, macro?.
 
 ## Common Development Tasks
 
@@ -336,7 +337,7 @@ Embedded as `STDLIB_SOURCE` (a C string constant near the top of `crushlisp.c`) 
 
 ## Differences from Clojure/Standard Lisps
 
-- No macros, no `defmacro`; `->` and `->>` are built-in special forms
+- `defmacro` supported; no `quote` splicing (`~`, `~@`, backtick); `->` and `->>` are built-in special forms
 - No tail-call optimization (TCO) for user functions; use `loop`/`recur` for iteration
 - No continuations (`call/cc`)
 - All numbers are doubles (no integer type, no bignums)

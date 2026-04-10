@@ -70,6 +70,7 @@ echo "(println \"Result:\" (+ 1 2 3))" | ./crushlisp -s
 - `(when test body...)` - Evaluate body if truthy, else nil
 - `(def name value)` - Bind a global name
 - `(defn name [params...] body...)` - Define a named function (shorthand for `def` + `fn`)
+- `(defmacro name [params...] body...)` - Define a macro (receives unevaluated args, returns code to eval)
 - `(let [name val ...] body...)` - Scoped local bindings (accepts `[]` or `()`)
 - `(fn [params...] body...)` - Anonymous function; variadic: `(fn [a & rest] ...)`
 - `(do expr...)` - Evaluate expressions sequentially
@@ -146,11 +147,13 @@ echo "(println \"Result:\" (+ 1 2 3))" | ./crushlisp -s
 
 **Eval:** `(eval expr)` - Evaluate expression or string containing code
 
+**Macros:** `(macroexpand form)` - Expand a macro call without evaluating the result
+
 **System:**
 - `(sh command)` - Execute shell command string, return output (supports pipes, wildcards, etc.)
 - `(run program args...)` - Execute program directly without shell (safer for untrusted input)
 
-**Type predicates:** `nil?` `number?` `string?` `bool?` `symbol?` `list?` `vector?` `fn?` `map?`
+**Type predicates:** `nil?` `number?` `string?` `bool?` `symbol?` `list?` `vector?` `fn?` `macro?` `map?`
 
 **Help:** `(help)` - Show help message
 
@@ -245,6 +248,13 @@ CrushLisp includes built-in protection against common runtime issues:
 (format "Hi %s, you have %d messages" "Bob" 5) ; => "Hi Bob, you have 5 messages"
 (parse-number "3.14")            ; => 3.14
 (parse-number "oops")            ; => nil
+
+; Macros
+(defmacro unless [test body]
+  (list 'if (list 'not test) body))
+
+(unless false 42)           ; => 42
+(macroexpand '(unless false 42)) ; => (if (not false) 42)
 
 ; Sorting
 (sort (list 3 1 4 1 5))                         ; => (1 1 3 4 5)

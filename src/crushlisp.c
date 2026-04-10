@@ -22,7 +22,8 @@ typedef enum {
     TYPE_FUNCTION,
     TYPE_NATIVE_FUNCTION,
     TYPE_RECUR,      /* sentinel: carries recur args back to loop */
-    TYPE_MAP         /* linked list of (key . value) pairs */
+    TYPE_MAP,        /* linked list of (key . value) pairs */
+    TYPE_MACRO       /* like function, but receives unevaluated args; result is eval'd */
 } ValueType;
 
 typedef struct Value Value;
@@ -109,6 +110,8 @@ static const char *HELP_TEXT =
 "  (throw message)        signal an error\n"
 "  (-> x (f a) (g b))    thread-first: (g (f x a) b)\n"
 "  (->> x (f a) (g b))   thread-last:  (g b (f a x))\n"
+"  (defn name [params...] body...) define a named function\n"
+"  (defmacro name [params...] body...) define a macro\n"
 "  (doseq [x coll] body...) iterate over collection for side effects\n"
 "  (dotimes [i n] body...) iterate i from 0 to n-1\n\n"
 "Data structures:\n"
@@ -158,10 +161,11 @@ static const char *HELP_TEXT =
 "  (load filename)        read and evaluate file\n"
 "  (sh command)           execute shell command, return output\n"
 "  (run program args...)  execute program directly (no shell)\n"
-"  (help)                 show this message\n\n"
+"  (help)                 show this message\n"
+"  (macroexpand form)     expand a macro call without evaluating it\n\n"
 "Type predicates:\n"
 "  (nil? x)  (number? x)  (string? x)  (bool? x)  (symbol? x)\n"
-"  (list? x) (vector? x)  (fn? x)      (map? x)\n";
+"  (list? x) (vector? x)  (fn? x)      (macro? x) (map? x)\n";
 
 static Value VALUE_NIL = { TYPE_NIL, {0}, NULL };
 static Value VALUE_TRUE = { TYPE_BOOL, { .boolean = 1 }, NULL };
@@ -304,6 +308,14 @@ static Value *make_native(NativeFn fn, const char *doc) {
 
 static Value *make_function(Value *params, Value *body, Env *env) {
     Value *value = allocate_value(TYPE_FUNCTION);
+    value->data.function.params = params;
+    value->data.function.body = body;
+    value->data.function.env = env;
+    return value;
+}
+
+static Value *make_macro(Value *params, Value *body, Env *env) {
+    Value *value = allocate_value(TYPE_MACRO);
     value->data.function.params = params;
     value->data.function.body = body;
     value->data.function.env = env;
@@ -590,6 +602,7 @@ static int value_equals(Value *a, Value *b) {
             return is_nil(curr_a) && is_nil(curr_b);
         }
         case TYPE_FUNCTION:
+        case TYPE_MACRO:
         case TYPE_NATIVE_FUNCTION:
         case TYPE_RECUR:
         case TYPE_MAP:
@@ -711,6 +724,9 @@ static void write_value(StringBuilder *sb, Value *value, int readable) {
         }
         case TYPE_FUNCTION:
             sb_append(sb, "<function>");
+            break;
+        case TYPE_MACRO:
+            sb_append(sb, "<macro>");
             break;
         case TYPE_NATIVE_FUNCTION:
             if (value->doc) {
@@ -1023,6 +1039,7 @@ static ParseStatus parse_expr(const char *input, size_t *consumed, Value **out, 
 static Value *eval(Value *expr, Env *env, char **error);
 static Value *eval_args(Value *list, Env *env, char **error);
 static Value *vector_to_list(Value *vec);
+static int params_are_symbols(Value *params);
 
 static Value *eval_quote(Value *args, char **error) {
     if (!require_exact_args(args, 1, error, "quote")) {
@@ -1073,6 +1090,42 @@ static Value *eval_defn(Value *args, Env *env, char **error) {
     Env *target = env_global(env);
     env_define(target, name_form->data.string, fn_val);
     return fn_val;
+}
+
+static Value *eval_defmacro(Value *args, Env *env, char **error) {
+    if (is_nil(args) || !is_list(args)) {
+        set_error(error, "defmacro: expects name, params, and body");
+        return NULL;
+    }
+    Value *name_form = args->data.list.car;
+    if (!name_form || name_form->type != TYPE_SYMBOL) {
+        set_error(error, "defmacro: name must be a symbol");
+        return NULL;
+    }
+    Value *rest = args->data.list.cdr;
+    if (is_nil(rest)) {
+        set_error(error, "defmacro: expects params and body");
+        return NULL;
+    }
+    Value *params = rest->data.list.car;
+    if (!(is_nil(params) || is_list(params) || is_vector(params))) {
+        set_error(error, "defmacro: params must be a list or vector");
+        return NULL;
+    }
+    if (!params_are_symbols(params)) {
+        set_error(error, "defmacro: params must be symbols");
+        return NULL;
+    }
+    Value *body = rest->data.list.cdr;
+    if (is_nil(body)) {
+        set_error(error, "defmacro: requires a body");
+        return NULL;
+    }
+    Value *params_list = vector_to_list(params);
+    Value *macro_val = make_macro(params_list, body, env);
+    Env *target = env_global(env);
+    env_define(target, name_form->data.string, macro_val);
+    return macro_val;
 }
 
 static int params_are_symbols(Value *params) {
@@ -1262,6 +1315,7 @@ tco_loop:
         case TYPE_BOOL:
         case TYPE_STRING:
         case TYPE_FUNCTION:
+        case TYPE_MACRO:
         case TYPE_NATIVE_FUNCTION:
         case TYPE_NIL:
             result = expr;
@@ -1349,6 +1403,10 @@ tco_loop:
                 }
                 if (strcmp(sname, "defn") == 0) {
                     result = eval_defn(args, env, error);
+                    goto done;
+                }
+                if (strcmp(sname, "defmacro") == 0) {
+                    result = eval_defmacro(args, env, error);
                     goto done;
                 }
                 if (strcmp(sname, "let") == 0) {
@@ -1742,10 +1800,29 @@ tco_loop:
                     goto done;
                 }
             }
-            /* function call */
+            /* function / macro call */
             {
                 Value *callable = eval(op, env, error);
                 if (!callable || (error && *error)) goto done;
+                /* macro: bind unevaluated args, eval body, then eval the expansion */
+                if (callable->type == TYPE_MACRO) {
+                    Env *frame = env_create(callable->data.function.env);
+                    if (!bind_params(callable->data.function.params, args, frame, error)) {
+                        goto done;
+                    }
+                    Value *m_body = callable->data.function.body;
+                    if (is_nil(m_body)) { result = value_nil(); goto done; }
+                    Value *m_iter = m_body;
+                    while (!is_nil(m_iter->data.list.cdr)) {
+                        Value *v = eval(m_iter->data.list.car, frame, error);
+                        if (!v || (error && *error)) goto done;
+                        m_iter = m_iter->data.list.cdr;
+                    }
+                    Value *expanded = eval(m_iter->data.list.car, frame, error);
+                    if (!expanded || (error && *error)) goto done;
+                    expr = expanded;
+                    goto tco_loop;
+                }
                 Value *eargs = eval_args(args, env, error);
                 if (!eargs || (error && *error)) goto done;
                 if (callable->type == TYPE_NATIVE_FUNCTION) {
@@ -2707,6 +2784,38 @@ static Value *builtin_is_fn(Value *args, Env *env, char **error) {
            ? value_true() : value_false();
 }
 
+static Value *builtin_is_macro(Value *args, Env *env, char **error) {
+    (void)env;
+    if (!require_exact_args(args, 1, error, "macro?")) {
+        return NULL;
+    }
+    Value *v = args->data.list.car;
+    return (v && v->type == TYPE_MACRO) ? value_true() : value_false();
+}
+
+static Value *builtin_macroexpand(Value *args, Env *env, char **error) {
+    (void)env;
+    if (!require_exact_args(args, 1, error, "macroexpand")) return NULL;
+    Value *form = args->data.list.car;
+    if (!is_list(form) || is_nil(form)) return form;
+    Value *head = form->data.list.car;
+    Value *margs = form->data.list.cdr;
+    Value *callable = eval(head, global_environment, error);
+    if (!callable || (error && *error)) return NULL;
+    if (callable->type != TYPE_MACRO) return form;
+    Env *frame = env_create(callable->data.function.env);
+    if (!bind_params(callable->data.function.params, margs, frame, error)) return NULL;
+    Value *m_body = callable->data.function.body;
+    if (is_nil(m_body)) return value_nil();
+    Value *m_iter = m_body;
+    while (!is_nil(m_iter->data.list.cdr)) {
+        Value *v = eval(m_iter->data.list.car, frame, error);
+        if (!v || (error && *error)) return NULL;
+        m_iter = m_iter->data.list.cdr;
+    }
+    return eval(m_iter->data.list.car, frame, error);
+}
+
 static Value *builtin_not(Value *args, Env *env, char **error) {
     (void)env;
     if (!require_exact_args(args, 1, error, "not")) {
@@ -3316,6 +3425,8 @@ static void install_builtins(Env *env) {
     register_builtin(env, "list?", builtin_is_list, "list?");
     register_builtin(env, "vector?", builtin_is_vector, "vector?");
     register_builtin(env, "fn?", builtin_is_fn, "fn?");
+    register_builtin(env, "macro?", builtin_is_macro, "macro?");
+    register_builtin(env, "macroexpand", builtin_macroexpand, "macroexpand");
     register_builtin(env, "not", builtin_not, "not");
     register_builtin(env, "apply", builtin_apply, "apply");
     register_builtin(env, "reduce", builtin_reduce, "reduce");

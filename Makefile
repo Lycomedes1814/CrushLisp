@@ -101,6 +101,10 @@ test: $(TARGET)
 	@echo "(do (defn square [x] (* x x)) (square 5))" | ./$(TARGET) | grep -qx "25" && echo "✓ defn basic test passed" || (echo "✗ defn basic test failed" && exit 1)
 	@echo "(do (defn add [a b] (+ a b)) (add 3 4))" | ./$(TARGET) | grep -qx "7" && echo "✓ defn multi-arg test passed" || (echo "✗ defn multi-arg test failed" && exit 1)
 	@echo "(do (defn fact [n] (if (= n 0) 1 (* n (fact (- n 1))))) (fact 5))" | ./$(TARGET) | grep -qx "120" && echo "✓ defn recursive test passed" || (echo "✗ defn recursive test failed" && exit 1)
+	@echo "(do (defmacro unless [test body] (list (quote if) (list (quote not) test) body)) (unless false 42))" | ./$(TARGET) | grep -qx "42" && echo "✓ defmacro basic test passed" || (echo "✗ defmacro basic test failed" && exit 1)
+	@echo "(do (defmacro unless [test body] (list (quote if) (list (quote not) test) body)) (macroexpand (quote (unless false 42))))" | ./$(TARGET) | grep -qx "(if (not false) 42)" && echo "✓ macroexpand test passed" || (echo "✗ macroexpand test failed" && exit 1)
+	@echo "(do (defmacro my-when [test & body] (list (quote if) test (cons (quote do) body))) (my-when true 1 2 3))" | ./$(TARGET) | grep -qx "3" && echo "✓ defmacro variadic test passed" || (echo "✗ defmacro variadic test failed" && exit 1)
+	@echo "(do (defmacro m [x] (list (quote +) x 1)) (macro? m))" | ./$(TARGET) | grep -qx "true" && echo "✓ macro? test passed" || (echo "✗ macro? test failed" && exit 1)
 	@echo "All tests passed!"
 
 install: $(TARGET)
