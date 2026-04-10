@@ -27,7 +27,7 @@ echo "(+ 1 2)" | ./crushlisp  # Pipe mode
 ./crushlisp < script.lisp     # File redirect
 ```
 
-**After any code change**: always run `make && make test` to verify zero warnings and all tests pass (currently 68 tests).
+**After any code change**: always run `make && make test` to verify zero warnings and all tests pass (currently 71 tests).
 
 ## Repository Structure
 
@@ -97,6 +97,7 @@ VALUE_FALSE  // false
 | `if` | `(if test then [else])` | else is optional → returns nil |
 | `when` | `(when test body...)` | Runs body if truthy, else nil |
 | `def` | `(def name value)` | Binds in global env |
+| `defn` | `(defn name [params...] body...)` | Shorthand for `(def name (fn [params...] body...))` |
 | `let` | `(let [name val ...] body...)` | Local scope; `[]` or `()` accepted |
 | `fn` | `(fn [params...] body...)` | Closure; variadic: `(fn [a & rest] ...)` |
 | `do` | `(do expr...)` | Sequential eval, returns last |
@@ -233,7 +234,7 @@ For stderr (errors, stack overflow, etc.):
 
 ### Current Test Coverage
 
-68 tests covering: arithmetic, variables, conditionals, lists, vectors, vector evaluation, vector collection ops, functions with vector params, silent mode, stack overflow, eval, arity validation, shell exit status, file I/O (slurp/spit roundtrip), load, let with vector syntax, conj/cons on vectors, all 8 type predicates, apply, reduce, loop/recur, try/throw, when, hash maps, stdlib map/filter, string functions (upper-case, lower-case, trim, substring, starts-with?, ends-with?, replace, index-of, str/join, format, parse-number), sort, sort-by, contains? on strings, threading macros (-> and ->>), doseq, dotimes.
+71 tests covering: arithmetic, variables, conditionals, lists, vectors, vector evaluation, vector collection ops, functions with vector params, silent mode, stack overflow, eval, arity validation, shell exit status, file I/O (slurp/spit roundtrip), load, let with vector syntax, conj/cons on vectors, all 8 type predicates, apply, reduce, loop/recur, try/throw, when, hash maps, stdlib map/filter, string functions (upper-case, lower-case, trim, substring, starts-with?, ends-with?, replace, index-of, str/join, format, parse-number), sort, sort-by, contains? on strings, threading macros (-> and ->>), doseq, dotimes, defn.
 
 ## Common Development Tasks
 

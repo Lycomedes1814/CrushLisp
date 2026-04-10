@@ -1051,6 +1051,30 @@ static Value *eval_def(Value *args, Env *env, char **error) {
     return evaluated;
 }
 
+static Value *eval_defn(Value *args, Env *env, char **error) {
+    if (is_nil(args) || !is_list(args)) {
+        set_error(error, "defn: expects name, params, and body");
+        return NULL;
+    }
+    Value *name_form = args->data.list.car;
+    if (!name_form || name_form->type != TYPE_SYMBOL) {
+        set_error(error, "defn: name must be a symbol");
+        return NULL;
+    }
+    Value *fn_args = args->data.list.cdr;
+    if (is_nil(fn_args)) {
+        set_error(error, "defn: expects params and body");
+        return NULL;
+    }
+    Value *fn_sym = make_symbol("fn");
+    Value *fn_expr = cons(fn_sym, fn_args);
+    Value *fn_val = eval(fn_expr, env, error);
+    if (!fn_val || (error && *error)) return NULL;
+    Env *target = env_global(env);
+    env_define(target, name_form->data.string, fn_val);
+    return fn_val;
+}
+
 static int params_are_symbols(Value *params) {
     Value *iter = params;
     int seen_rest = 0;
@@ -1321,6 +1345,10 @@ tco_loop:
                 }
                 if (strcmp(sname, "def") == 0) {
                     result = eval_def(args, env, error);
+                    goto done;
+                }
+                if (strcmp(sname, "defn") == 0) {
+                    result = eval_defn(args, env, error);
                     goto done;
                 }
                 if (strcmp(sname, "let") == 0) {

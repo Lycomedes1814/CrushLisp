@@ -69,6 +69,7 @@ echo "(println \"Result:\" (+ 1 2 3))" | ./crushlisp -s
 - `(if test then else)` - Conditional branching
 - `(when test body...)` - Evaluate body if truthy, else nil
 - `(def name value)` - Bind a global name
+- `(defn name [params...] body...)` - Define a named function (shorthand for `def` + `fn`)
 - `(let [name val ...] body...)` - Scoped local bindings (accepts `[]` or `()`)
 - `(fn [params...] body...)` - Anonymous function; variadic: `(fn [a & rest] ...)`
 - `(do expr...)` - Evaluate expressions sequentially
@@ -170,10 +171,10 @@ CrushLisp includes built-in protection against common runtime issues:
 
 ```lisp
 ; Define a factorial function
-(def factorial (fn [n]
+(defn factorial [n]
   (if (= n 0)
     1
-    (* n (factorial (dec n))))))
+    (* n (factorial (dec n)))))
 
 (factorial 5)
 ; => 120

@@ -98,6 +98,9 @@ test: $(TARGET)
 	@echo "(->> (list 1 2 3) (map inc) (filter (fn [x] (> x 2))))" | ./$(TARGET) | grep -qx "(3 4)" && echo "✓ ->> thread-last test passed" || (echo "✗ ->> thread-last test failed" && exit 1)
 	@echo "(do (doseq [x (list 1 2 3)] (print x)) nil)" | ./$(TARGET) | grep -q "123" && echo "✓ doseq test passed" || (echo "✗ doseq test failed" && exit 1)
 	@echo "(do (dotimes [i 3] (print i)) nil)" | ./$(TARGET) | grep -q "012" && echo "✓ dotimes test passed" || (echo "✗ dotimes test failed" && exit 1)
+	@echo "(do (defn square [x] (* x x)) (square 5))" | ./$(TARGET) | grep -qx "25" && echo "✓ defn basic test passed" || (echo "✗ defn basic test failed" && exit 1)
+	@echo "(do (defn add [a b] (+ a b)) (add 3 4))" | ./$(TARGET) | grep -qx "7" && echo "✓ defn multi-arg test passed" || (echo "✗ defn multi-arg test failed" && exit 1)
+	@echo "(do (defn fact [n] (if (= n 0) 1 (* n (fact (- n 1))))) (fact 5))" | ./$(TARGET) | grep -qx "120" && echo "✓ defn recursive test passed" || (echo "✗ defn recursive test failed" && exit 1)
 	@echo "All tests passed!"
 
 install: $(TARGET)
