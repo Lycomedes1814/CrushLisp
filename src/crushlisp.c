@@ -95,7 +95,8 @@ static const char *STDLIB_SOURCE =
 
 static const char *HELP_TEXT =
 "CrushLisp special forms:\n"
-"  (quote x)              return x without evaluation\n"
+"  (quote x) or 'x        return x without evaluation\n"
+"  `x ~x ~@x              quasiquote, unquote, unquote-splicing\n"
 "  (if test then [else])  conditional; else optional, defaults to nil\n"
 "  (when test body...)    if truthy, eval body, else nil\n"
 "  (def name value)       bind a global name\n"
@@ -1007,6 +1008,31 @@ static ParseStatus parse_expr_internal(const char *input, size_t *index, Value *
         *out = list;
         return PARSE_OK;
     }
+    if (c == '`') {
+        size_t next_index = i + 1;
+        Value *body = NULL;
+        ParseStatus status = parse_expr_internal(input, &next_index, &body, error);
+        if (status != PARSE_OK) return status;
+        *index = next_index;
+        *out = cons(make_symbol("quasiquote"), cons(body, value_nil()));
+        return PARSE_OK;
+    }
+    if (c == '~') {
+        size_t next_index = i + 1;
+        const char *form_name;
+        if (input[next_index] == '@') {
+            next_index++;
+            form_name = "unquote-splicing";
+        } else {
+            form_name = "unquote";
+        }
+        Value *body = NULL;
+        ParseStatus status = parse_expr_internal(input, &next_index, &body, error);
+        if (status != PARSE_OK) return status;
+        *index = next_index;
+        *out = cons(make_symbol(form_name), cons(body, value_nil()));
+        return PARSE_OK;
+    }
     if (c == '"') {
         Value *string = parse_string_token(input, index, error);
         if (!string) {
@@ -1046,6 +1072,77 @@ static Value *eval_quote(Value *args, char **error) {
         return NULL;
     }
     return args->data.list.car;
+}
+
+/* quasiquote: recursively process a template, evaluating unquote/unquote-splicing */
+static Value *eval_quasiquote(Value *form, Env *env, char **error);
+
+static Value *qq_process_list(Value *elems, Env *env, char **error) {
+    if (is_nil(elems)) return value_nil();
+    Value *first = elems->data.list.car;
+    Value *rest_result = qq_process_list(elems->data.list.cdr, env, error);
+    if (error && *error) return NULL;
+    /* check for (unquote-splicing expr) */
+    if (is_list(first) && !is_nil(first) &&
+        first->data.list.car->type == TYPE_SYMBOL &&
+        strcmp(first->data.list.car->data.string, "unquote-splicing") == 0) {
+        Value *splice_args = first->data.list.cdr;
+        if (is_nil(splice_args) || !is_nil(splice_args->data.list.cdr)) {
+            set_error(error, "unquote-splicing: expects exactly one argument");
+            return NULL;
+        }
+        Value *spliced = eval(splice_args->data.list.car, env, error);
+        if (!spliced || (error && *error)) return NULL;
+        return list_append(spliced, rest_result);
+    }
+    Value *processed = eval_quasiquote(first, env, error);
+    if (error && *error) return NULL;
+    return cons(processed, rest_result);
+}
+
+static Value *eval_quasiquote(Value *form, Env *env, char **error) {
+    if (is_nil(form) || (!is_list(form) && !is_vector(form))) {
+        return form;
+    }
+    if (is_vector(form)) {
+        /* process vector elements similarly, return as vector */
+        Value *as_list = vector_to_list(form);
+        Value *processed = qq_process_list(as_list, env, error);
+        if (error && *error) return NULL;
+        /* convert list back to vector */
+        Value *result = value_nil();
+        /* count first */
+        size_t count = 0;
+        Value *iter = processed;
+        while (!is_nil(iter) && is_list(iter)) { count++; iter = iter->data.list.cdr; }
+        if (count == 0) return value_nil(); /* empty vector is nil */
+        Value **items = checked_malloc(count * sizeof(Value *));
+        iter = processed;
+        for (size_t i = 0; i < count; i++) {
+            items[i] = iter->data.list.car;
+            iter = iter->data.list.cdr;
+        }
+        result = vector_from_array(items, count);
+        free(items);
+        return result;
+    }
+    /* list */
+    Value *head = form->data.list.car;
+    if (head && head->type == TYPE_SYMBOL) {
+        if (strcmp(head->data.string, "unquote") == 0) {
+            Value *uq_args = form->data.list.cdr;
+            if (is_nil(uq_args) || !is_nil(uq_args->data.list.cdr)) {
+                set_error(error, "unquote: expects exactly one argument");
+                return NULL;
+            }
+            return eval(uq_args->data.list.car, env, error);
+        }
+        if (strcmp(head->data.string, "unquote-splicing") == 0) {
+            set_error(error, "unquote-splicing: not inside a list");
+            return NULL;
+        }
+    }
+    return qq_process_list(form, env, error);
 }
 
 static Value *eval_def(Value *args, Env *env, char **error) {
@@ -1378,6 +1475,11 @@ tco_loop:
 
                 if (strcmp(sname, "quote") == 0) {
                     result = eval_quote(args, error);
+                    goto done;
+                }
+                if (strcmp(sname, "quasiquote") == 0) {
+                    if (!require_exact_args(args, 1, error, "quasiquote")) goto done;
+                    result = eval_quasiquote(args->data.list.car, env, error);
                     goto done;
                 }
                 if (strcmp(sname, "if") == 0) {

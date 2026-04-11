@@ -105,6 +105,10 @@ test: $(TARGET)
 	@echo "(do (defmacro unless [test body] (list (quote if) (list (quote not) test) body)) (macroexpand (quote (unless false 42))))" | ./$(TARGET) | grep -qx "(if (not false) 42)" && echo "✓ macroexpand test passed" || (echo "✗ macroexpand test failed" && exit 1)
 	@echo "(do (defmacro my-when [test & body] (list (quote if) test (cons (quote do) body))) (my-when true 1 2 3))" | ./$(TARGET) | grep -qx "3" && echo "✓ defmacro variadic test passed" || (echo "✗ defmacro variadic test failed" && exit 1)
 	@echo "(do (defmacro m [x] (list (quote +) x 1)) (macro? m))" | ./$(TARGET) | grep -qx "true" && echo "✓ macro? test passed" || (echo "✗ macro? test failed" && exit 1)
+	@printf '`(a ~(+ 1 2) c)\n' | ./$(TARGET) | grep -qx "(a 3 c)" && echo "✓ quasiquote with unquote test passed" || (echo "✗ quasiquote with unquote test failed" && exit 1)
+	@printf '(def xs (list 1 2 3)) `(a ~@xs b)\n' | ./$(TARGET) | grep -qx "(a 1 2 3 b)" && echo "✓ unquote-splicing test passed" || (echo "✗ unquote-splicing test failed" && exit 1)
+	@printf '(defmacro unless [test body] `(if (not ~test) ~body nil)) (unless false 42)\n' | ./$(TARGET) | grep -qx "42" && echo "✓ quasiquote macro test passed" || (echo "✗ quasiquote macro test failed" && exit 1)
+	@printf '`[1 ~(+ 2 3) 4]\n' | ./$(TARGET) | grep -qx "\[1 5 4\]" && echo "✓ quasiquote vector test passed" || (echo "✗ quasiquote vector test failed" && exit 1)
 	@echo "All tests passed!"
 
 install: $(TARGET)

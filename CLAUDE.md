@@ -99,6 +99,7 @@ VALUE_FALSE  // false
 | `def` | `(def name value)` | Binds in global env |
 | `defn` | `(defn name [params...] body...)` | Shorthand for `(def name (fn [params...] body...))` |
 | `defmacro` | `(defmacro name [params...] body...)` | Define a macro; receives unevaluated args, result is eval'd |
+| `quasiquote` | `` `(a ~x ~@xs) `` | Template with unquote (`~`) and splicing (`~@`) |
 | `let` | `(let [name val ...] body...)` | Local scope; `[]` or `()` accepted |
 | `fn` | `(fn [params...] body...)` | Closure; variadic: `(fn [a & rest] ...)` |
 | `do` | `(do expr...)` | Sequential eval, returns last |
@@ -235,7 +236,7 @@ For stderr (errors, stack overflow, etc.):
 
 ### Current Test Coverage
 
-75 tests covering: arithmetic, variables, conditionals, lists, vectors, vector evaluation, vector collection ops, functions with vector params, silent mode, stack overflow, eval, arity validation, shell exit status, file I/O (slurp/spit roundtrip), load, let with vector syntax, conj/cons on vectors, all 8 type predicates, apply, reduce, loop/recur, try/throw, when, hash maps, stdlib map/filter, string functions (upper-case, lower-case, trim, substring, starts-with?, ends-with?, replace, index-of, str/join, format, parse-number), sort, sort-by, contains? on strings, threading macros (-> and ->>), doseq, dotimes, defn, defmacro, macroexpand, macro?.
+79 tests covering: arithmetic, variables, conditionals, lists, vectors, vector evaluation, vector collection ops, functions with vector params, silent mode, stack overflow, eval, arity validation, shell exit status, file I/O (slurp/spit roundtrip), load, let with vector syntax, conj/cons on vectors, all 8 type predicates, apply, reduce, loop/recur, try/throw, when, hash maps, stdlib map/filter, string functions (upper-case, lower-case, trim, substring, starts-with?, ends-with?, replace, index-of, str/join, format, parse-number), sort, sort-by, contains? on strings, threading macros (-> and ->>), doseq, dotimes, defn, defmacro, macroexpand, macro?, quasiquote/unquote/unquote-splicing.
 
 ## Common Development Tasks
 
@@ -337,7 +338,7 @@ Embedded as `STDLIB_SOURCE` (a C string constant near the top of `crushlisp.c`) 
 
 ## Differences from Clojure/Standard Lisps
 
-- `defmacro` supported; no `quote` splicing (`~`, `~@`, backtick); `->` and `->>` are built-in special forms
+- `defmacro` supported with quasiquote (`` ` ``), unquote (`~`), and unquote-splicing (`~@`); `->` and `->>` are built-in special forms
 - No tail-call optimization (TCO) for user functions; use `loop`/`recur` for iteration
 - No continuations (`call/cc`)
 - All numbers are doubles (no integer type, no bignums)

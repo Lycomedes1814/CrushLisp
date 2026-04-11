@@ -65,7 +65,8 @@ echo "(println \"Result:\" (+ 1 2 3))" | ./crushlisp -s
 
 ### Special Forms
 
-- `(quote x)` - Return x without evaluation
+- `(quote x)` or `'x` - Return x without evaluation
+- `` `(a ~x ~@xs) `` - Quasiquote with unquote (`~`) and splicing (`~@`)
 - `(if test then else)` - Conditional branching
 - `(when test body...)` - Evaluate body if truthy, else nil
 - `(def name value)` - Bind a global name
@@ -85,13 +86,6 @@ echo "(println \"Result:\" (+ 1 2 3))" | ./crushlisp -s
 - `(dotimes [i n] body...)` - Iterate `i` from 0 to n-1
 
 ### Built-in Functions
-
-**Arithmetic:**
-- `+`, `-`, `*`, `/`, `mod` - Standard arithmetic
-- `inc`, `dec` - Increment/decrement by 1
-
-**Comparisons:**
-- `=`, `<`, `<=`, `>`, `>=`
 
 **Arithmetic:** `+` `-` `*` `/` `mod` `inc` `dec`
 
@@ -249,12 +243,20 @@ CrushLisp includes built-in protection against common runtime issues:
 (parse-number "3.14")            ; => 3.14
 (parse-number "oops")            ; => nil
 
-; Macros
+; Macros (with quasiquote syntax)
 (defmacro unless [test body]
-  (list 'if (list 'not test) body))
+  `(if (not ~test) ~body nil))
 
 (unless false 42)           ; => 42
-(macroexpand '(unless false 42)) ; => (if (not false) 42)
+(macroexpand '(unless false 42)) ; => (if (not false) 42 nil)
+
+; Unquote-splicing (~@) splices a list into the template
+(defmacro my-when [test & body]
+  `(if ~test (do ~@body) nil))
+
+(my-when true
+  (println "hello")
+  42)                       ; prints "hello", => 42
 
 ; Sorting
 (sort (list 3 1 4 1 5))                         ; => (1 1 3 4 5)
