@@ -23,7 +23,7 @@
 - [x] `doseq` / `dotimes` — special forms
 - [x] `->` / `->>` threading — special forms
 - [ ] Tail-call optimization (TCO) for user-defined functions — removes 1000-depth ceiling for recursive code
-- [ ] Macros (`defmacro`) — user-defined control flow and syntactic sugar
+- [X] Macros (`defmacro`) — user-defined control flow and syntactic sugar
 - [ ] Integer type — doubles work to 2^53 but `mod` and bitwise ops feel wrong on floats
 - [ ] Regex — `(re-find pattern str)`
 
